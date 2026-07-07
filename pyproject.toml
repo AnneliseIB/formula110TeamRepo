@@ -1,0 +1,49 @@
+[project]
+name = "racing"
+version = "0.1.0"
+description = "Small Ursina 3D racing starter project"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "panda3d==1.10.13",
+    "ursina<8",
+]
+
+[project.scripts]
+racing = "racing:main"
+
+[build-system]
+requires = ["uv_build>=0.10.6,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = ["racing", "controllers"]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.411",
+    "pytest>=9.1.1",
+    "ruff>=0.15.20",
+]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+]
+testpaths = ["tests"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.11"
+pythonPlatform = "Darwin"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = false
+
+[tool.ruff]
+line-length = 120
+src = ["src", "tests"]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]

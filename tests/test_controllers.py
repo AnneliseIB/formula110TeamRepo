@@ -1,0 +1,178 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from racing.student.api import (
+    CameraSensors,
+    ContactSensors,
+    LidarSensors,
+    OdometrySensors,
+    RobotCommand,
+    RobotSensors,
+    clamp_command,
+    default_student_controller,
+    load_student_controller,
+    load_student_submission,
+)
+
+
+def test_clamp_command_bounds_normalized_actuators() -> None:
+    command = clamp_command(RobotCommand(throttle=3.0, steer=-2.0, brake=1.7))
+
+    assert command == RobotCommand(throttle=1.0, steer=-1.0, brake=1.0)
+
+
+def test_lidar_rejects_mismatched_angles_and_distances() -> None:
+    with pytest.raises(ValueError, match="same length"):
+        LidarSensors(angles_degrees=(0.0, 30.0), distances_m=(1.0,))
+
+
+def test_default_student_controller_steers_toward_track_heading() -> None:
+    sensors = RobotSensors(
+        camera=CameraSensors(center_offset_m=0.5, heading_error_degrees=30.0),
+        odometry=OdometrySensors(speed_mps=0.0),
+    )
+
+    command = default_student_controller(sensors)
+
+    assert command.throttle > 0.0
+    assert command.steer > 0.0
+    assert command.brake == 0.0
+
+
+def test_default_student_controller_backs_out_of_contact() -> None:
+    sensors = RobotSensors(
+        contact=ContactSensors(wall=0.2),
+        lidar=LidarSensors(distances_m=(5.0, 4.0, 3.0, 2.0, 1.5, 1.0, 0.5)),
+    )
+
+    command = default_student_controller(sensors)
+
+    assert command.throttle < 0.0
+    assert command.brake == 0.0
+
+
+def test_bundled_starter_controller_loads_from_top_level_controllers_package() -> None:
+    controller = load_student_controller("controllers.crash_fast")
+
+    command = controller(RobotSensors())
+
+    assert isinstance(command, RobotCommand)
+
+
+def test_crash_fast_controller_declares_mclaren_orange_car_color() -> None:
+    submission = load_student_submission("controllers.crash_fast")
+
+    assert submission.display_name == "Crash Fast"
+    assert submission.car_color == (1.0, 0x87 / 255, 0.0, 1.0)
+
+
+def test_load_student_controller_from_file(tmp_path: Path) -> None:
+    module_path = tmp_path / "student_driver.py"
+    module_path.write_text(
+        "from racing import RobotCommand, RobotSensors\n"
+        "\n"
+        "def drive(sensors: RobotSensors) -> RobotCommand:\n"
+        "    return RobotCommand(throttle=0.25, steer=0.5)\n",
+        encoding="utf-8",
+    )
+
+    controller = load_student_controller(module_path, function_name="drive")
+
+    assert controller(RobotSensors()) == RobotCommand(throttle=0.25, steer=0.5)
+
+
+def test_load_student_submission_returns_none_for_missing_display_name(tmp_path: Path) -> None:
+    module_path = tmp_path / "student_driver.py"
+    module_path.write_text(
+        "from racing import RobotCommand, RobotSensors\n"
+        "\n"
+        "def control(sensors: RobotSensors) -> RobotCommand:\n"
+        "    return RobotCommand(throttle=0.1)\n",
+        encoding="utf-8",
+    )
+
+    submission = load_student_submission(module_path)
+
+    assert submission.display_name is None
+    assert submission.car_color is None
+    assert submission.controller(RobotSensors()) == RobotCommand(throttle=0.1)
+
+
+def test_load_student_submission_reads_optional_display_name_and_car_color(tmp_path: Path) -> None:
+    module_path = tmp_path / "named_driver.py"
+    module_path.write_text(
+        "from racing import RobotCommand, RobotSensors\n"
+        "\n"
+        "RACING_NAME = '  Blue Steel  '\n"
+        "RACING_COLOR = '#ff8000'\n"
+        "\n"
+        "def control(sensors: RobotSensors) -> RobotCommand:\n"
+        "    return RobotCommand(throttle=0.4)\n",
+        encoding="utf-8",
+    )
+
+    submission = load_student_submission(module_path)
+
+    assert submission.display_name == "Blue Steel"
+    assert submission.car_color == (1.0, 128 / 255, 0.0, 1.0)
+    assert submission.controller(RobotSensors()) == RobotCommand(throttle=0.4)
+
+
+def test_load_student_submission_reads_tuple_car_color(tmp_path: Path) -> None:
+    module_path = tmp_path / "tuple_color_driver.py"
+    module_path.write_text(
+        "from racing import RobotCommand, RobotSensors\n"
+        "\n"
+        "RACING_COLOR = (0.1, 0.2, 0.3)\n"
+        "\n"
+        "def control(sensors: RobotSensors) -> RobotCommand:\n"
+        "    return RobotCommand(throttle=0.4)\n",
+        encoding="utf-8",
+    )
+
+    submission = load_student_submission(module_path)
+
+    assert submission.car_color == (0.1, 0.2, 0.3, 1.0)
+
+
+def test_load_student_submission_rejects_blank_display_name(tmp_path: Path) -> None:
+    module_path = tmp_path / "blank_named_driver.py"
+    module_path.write_text(
+        "RACING_NAME = '  '\n"
+        "\n"
+        "def control(sensors):\n"
+        "    from racing import RobotCommand\n"
+        "    return RobotCommand(throttle=0.4)\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="RACING_NAME"):
+        load_student_submission(module_path)
+
+
+def test_load_student_submission_rejects_invalid_car_color(tmp_path: Path) -> None:
+    module_path = tmp_path / "bad_color_driver.py"
+    module_path.write_text(
+        "RACING_COLOR = (1.2, 0.0, 0.0)\n"
+        "\n"
+        "def control(sensors):\n"
+        "    from racing import RobotCommand\n"
+        "    return RobotCommand(throttle=0.4)\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="RACING_COLOR"):
+        load_student_submission(module_path)
+
+
+def test_load_student_controller_requires_robot_command_return(tmp_path: Path) -> None:
+    module_path = tmp_path / "bad_driver.py"
+    module_path.write_text("def control(sensors):\n    return 123\n", encoding="utf-8")
+
+    controller = load_student_controller(module_path)
+
+    with pytest.raises(TypeError, match="RobotCommand"):
+        controller(RobotSensors())

@@ -1,0 +1,10 @@
+.DS_Store
+.venv/
+__pycache__/
+.pytest_cache/
+.pyright/
+*.egg-info/
+dist/
+build/
+artifacts/*
+!artifacts/.gitkeep
