@@ -9,8 +9,8 @@ from math import exp, sqrt
 from typing import Any, Protocol, cast
 
 from racing.game.config import RacingAudioConfig
-from racing.student.api import RobotCommand
 from racing.physics import RobotVehicle
+from racing.student.api import RobotCommand
 from racing.track.spatial import track_forward_vector, track_left_vector
 from racing.track.world import clamp
 
@@ -452,19 +452,21 @@ def engine_audio_state_for_robot(
     """Return the engine loop pitch and volume for one robot."""
     abs_speed_kmh = abs(speed_kmh)
     speed_amount = clamp(abs_speed_kmh / ENGINE_REFERENCE_SPEED_KMH, 0.0, 1.0)
-    throttle_load = clamp(abs(command.throttle), 0.0, 1.0)
-    brake_load = clamp(command.brake, 0.0, 1.0)
+    drive_load, brake_load = _signed_throttle_loads(
+        speed_mps=speed_kmh / 3.6,
+        throttle=command.throttle,
+    )
 
     play_rate = clamp(
-        0.64 + speed_amount * 1.36 + throttle_load * 0.32 - brake_load * 0.08,
+        0.64 + speed_amount * 1.36 + drive_load * 0.32 - brake_load * 0.08,
         MIN_ENGINE_PLAY_RATE,
         MAX_ENGINE_PLAY_RATE,
     )
     if eliminated or muted:
         return EngineAudioState(play_rate=play_rate, volume=0.0)
 
-    drive_amount = max(speed_amount, throttle_load * 0.35)
-    raw_volume = 0.18 + drive_amount * 0.64 + throttle_load * 0.28
+    drive_amount = max(speed_amount, drive_load * 0.35)
+    raw_volume = 0.18 + drive_amount * 0.64 + drive_load * 0.28
     damped_volume = raw_volume * (1.0 - brake_load * 0.28)
     volume = (
         clamp(config.master_volume, 0.0, 1.0) * clamp(config.engine_volume, 0.0, 1.0) * clamp(damped_volume, 0.0, 1.0)
@@ -483,15 +485,17 @@ def formula_engine_audio_state_for_robot(
     muted: bool,
 ) -> FormulaEngineAudioState:
     """Return modern formula engine layer controls for one robot."""
-    throttle_load = clamp(max(0.0, command.throttle), 0.0, 1.0)
-    brake_load = clamp(command.brake, 0.0, 1.0)
+    drive_load, _brake_load = _signed_throttle_loads(
+        speed_mps=speed_mps,
+        throttle=command.throttle,
+    )
     abs_speed_mps = abs(speed_mps)
     gear, _ = _formula_engine_gear(
         speed_mps=abs_speed_mps,
-        throttle_load=throttle_load,
+        throttle_load=drive_load,
         previous_state=previous_state,
     )
-    target_rpm = _formula_engine_target_rpm(speed_mps=abs_speed_mps, throttle_load=throttle_load, gear=gear)
+    target_rpm = _formula_engine_target_rpm(speed_mps=abs_speed_mps, throttle_load=drive_load, gear=gear)
     rpm_response_seconds = (
         FORMULA_RPM_ATTACK_SECONDS if target_rpm > previous_state.rpm else FORMULA_RPM_RELEASE_SECONDS
     )
@@ -501,7 +505,7 @@ def formula_engine_audio_state_for_robot(
         delta_seconds=delta_seconds,
         response_seconds=rpm_response_seconds,
     )
-    target_load = throttle_load * (1.0 - brake_load * 0.35)
+    target_load = drive_load
     load = _smoothed_value(
         current=previous_state.load,
         target=target_load,
@@ -584,7 +588,10 @@ def tire_squeal_audio_state_for_robot(
     if eliminated or muted:
         return TireSquealAudioState(intensity=0.0)
 
-    brake_load = clamp(command.brake, 0.0, 1.0)
+    _drive_load, brake_load = _signed_throttle_loads(
+        speed_mps=speed_mps,
+        throttle=command.throttle,
+    )
     steer_load = clamp(abs(command.steer), 0.0, 1.0)
     speed_amount = clamp(abs(speed_mps) / TIRE_SQUEAL_REFERENCE_SPEED_MPS, 0.0, 1.0)
     slip_amount = clamp(
@@ -615,6 +622,18 @@ def tire_squeal_audio_state_for_robot(
         clamp((steer_load - 0.58) / 0.42, 0.0, 1.0) * speed_amount * (brake_load * 0.08 + skid_amount * 0.26)
     )
     return TireSquealAudioState(intensity=clamp(max(brake_squeal, skid_squeal, slide_squeal, steering_scrub), 0.0, 1.0))
+
+
+def _signed_throttle_loads(*, speed_mps: float, throttle: float) -> tuple[float, float]:
+    """Split signed throttle into active drive and direction-change braking loads."""
+    throttle_load = clamp(abs(throttle), 0.0, 1.0)
+    direction_change_threshold_mps = 1.0 / 3.6
+    opposing_motion = (speed_mps > direction_change_threshold_mps and throttle < 0.0) or (
+        speed_mps < -direction_change_threshold_mps and throttle > 0.0
+    )
+    if opposing_motion:
+        return 0.0, throttle_load
+    return throttle_load, 0.0
 
 
 def update_audio_mute_key(

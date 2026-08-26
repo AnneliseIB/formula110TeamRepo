@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from hashlib import blake2s
 from importlib import import_module, util
+from math import isfinite
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Protocol, cast
@@ -24,28 +25,27 @@ DEFAULT_CAMERA_LOOKAHEAD_OFFSETS_M: tuple[float, ...] = tuple(0.0 for _distance 
 MAX_CAMERA_COMPETITORS = 3
 RACING_NAME_GLOBAL = "RACING_NAME"
 RACING_COLOR_GLOBAL = "RACING_COLOR"
+CONTROLLER_FACTORY_FUNCTION = "create_controller"
 
 
 @dataclass(frozen=True, slots=True)
 class RobotCommand:
-    """Normalized throttle, steering, and brake values sent to a robot vehicle.
+    """Normalized signed-throttle and steering values sent to a robot vehicle.
 
     Attributes:
-        throttle: Forward/reverse drive command from `-1.0` to `1.0`.
-            Positive values drive forward, negative values drive backward, and
-            `0.0` means no drive force. The simulator may brake before applying
-            an opposite-direction drive request when the robot is still moving.
+        throttle: Signed drive command from `-1.0` to `1.0`. Positive values
+            request forward drive and negative values request reverse drive.
+            When the requested direction opposes the robot's motion, the
+            simulator brakes before applying drive in the new direction.
+            `0.0` means coasting with no drive or braking force.
         steer: Steering command from `-1.0` to `1.0`. `-1.0` means full left,
             `0.0` means straight ahead, and `1.0` means full right. The
             simulator maps this normalized value to the car's physical steering
             limit.
-        brake: Brake command from `0.0` to `1.0`, where `0.0` means no braking
-            and `1.0` means maximum braking. Braking never requests reverse.
     """
 
     throttle: float = 0.0
     steer: float = 0.0
-    brake: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +289,14 @@ class RobotController(Protocol):
         ...
 
 
+class RobotControllerFactory(Protocol):
+    """Factory that returns an independent controller for one car and race."""
+
+    def __call__(self) -> RobotController:
+        """Create a fresh runtime controller instance."""
+        ...
+
+
 @dataclass(frozen=True, slots=True)
 class StudentControllerSubmission:
     """Loaded student controller plus optional display metadata."""
@@ -299,11 +307,13 @@ class StudentControllerSubmission:
 
 
 def clamp_command(command: RobotCommand) -> RobotCommand:
-    """Clamp a robot command to the normalized actuator ranges."""
+    """Validate and clamp a robot command to the normalized actuator ranges."""
+    values = (command.throttle, command.steer)
+    if not all(isfinite(value) for value in values):
+        raise ValueError("robot command values must be finite numbers")
     return RobotCommand(
         throttle=clamp(command.throttle, -1.0, 1.0),
         steer=clamp(command.steer, -1.0, 1.0),
-        brake=clamp(command.brake, 0.0, 1.0),
     )
 
 
@@ -311,23 +321,22 @@ def default_student_controller(sensors: RobotSensors) -> RobotCommand:
     """Drive with a small starter strategy that follows the center of the track."""
     if sensors.contact.any_contact:
         open_side_steer = -0.45 if sensors.lidar.left_m > sensors.lidar.right_m else 0.45
-        return RobotCommand(throttle=-0.15, steer=open_side_steer, brake=0.0)
+        return RobotCommand(throttle=-0.15, steer=open_side_steer)
 
     if sensors.lidar.front_m < 1.0:
         open_side_steer = -0.55 if sensors.lidar.left_m > sensors.lidar.right_m else 0.55
-        return RobotCommand(throttle=0.0, steer=open_side_steer, brake=0.8)
+        return RobotCommand(throttle=-0.8, steer=open_side_steer)
 
     if not sensors.camera.visible:
-        return RobotCommand(throttle=0.08, steer=0.0, brake=0.0)
+        return RobotCommand(throttle=0.08, steer=0.0)
 
     center_correction = clamp(sensors.camera.center_offset_m * 0.18, -0.45, 0.45)
     heading_correction = clamp(sensors.camera.heading_error_degrees / 90.0, -0.45, 0.45)
     steer = clamp(center_correction + heading_correction, -0.8, 0.8)
     target_speed_mps = 3.0 if abs(sensors.camera.heading_error_degrees) < 25.0 else 1.5
     speed_error = target_speed_mps - sensors.odometry.speed_mps
-    throttle = clamp(speed_error * 0.20, 0.0, 0.45)
-    brake = 0.15 if speed_error < -1.0 else 0.0
-    return RobotCommand(throttle=throttle, steer=steer, brake=brake)
+    throttle = -0.15 if speed_error < -1.0 else clamp(speed_error * 0.20, 0.0, 0.45)
+    return RobotCommand(throttle=throttle, steer=steer)
 
 
 def load_student_controller(
@@ -344,7 +353,13 @@ def load_student_submission(
     *,
     function_name: str = "control",
 ) -> StudentControllerSubmission:
-    """Load a student controller and optional ``RACING_NAME``/``RACING_COLOR`` metadata."""
+    """Load a controller and optional ``RACING_NAME``/``RACING_COLOR`` metadata.
+
+    A module-level ``create_controller()`` factory is preferred for the default
+    ``control`` function name. The factory lets every car and repeated race get
+    independent mutable controller state. Modules without a factory retain the
+    original function-based ``control(sensors)`` interface.
+    """
     if not function_name:
         raise ValueError("student control function name cannot be empty")
 
@@ -357,25 +372,82 @@ def load_student_submission(
 
 
 def _student_controller_from_module(*, module: ModuleType, function_name: str) -> RobotController:
+    if function_name == "control" and hasattr(module, CONTROLLER_FACTORY_FUNCTION):
+        return _student_controller_from_factory(module=module)
+
     raw_function = getattr(module, function_name, None)
     if raw_function is None:
         raise AttributeError(f"student module {module.__name__!r} does not define {function_name!r}")
     if not callable(raw_function):
         raise TypeError(f"student module attribute {function_name!r} must be callable")
 
-    student_function = cast(Callable[[RobotSensors], object], raw_function)
+    return _ValidatedRobotController(
+        raw_controller=raw_function,
+        label=f"{module.__name__}.{function_name}",
+    )
 
-    def controller(sensors: RobotSensors) -> RobotCommand:
-        """Call the student's function and check that it returns a RobotCommand."""
-        command = student_function(sensors)
+
+def _student_controller_from_factory(*, module: ModuleType) -> RobotController:
+    raw_factory = getattr(module, CONTROLLER_FACTORY_FUNCTION)
+    if not callable(raw_factory):
+        raise TypeError(f"student module attribute {CONTROLLER_FACTORY_FUNCTION!r} must be callable")
+    factory = cast(Callable[[], object], raw_factory)
+    return _controller_created_by_factory(factory=factory, module_name=module.__name__)
+
+
+def _controller_created_by_factory(*, factory: Callable[[], object], module_name: str) -> RobotController:
+    raw_controller = factory()
+    if not callable(raw_controller):
+        raise TypeError(
+            f"student controller factory {module_name}.{CONTROLLER_FACTORY_FUNCTION} must return a callable, "
+            f"got {type(raw_controller).__name__}"
+        )
+    return _ValidatedRobotController(
+        raw_controller=raw_controller,
+        label=f"{module_name}.{CONTROLLER_FACTORY_FUNCTION}()",
+        factory=factory,
+        module_name=module_name,
+    )
+
+
+class _ValidatedRobotController:
+    """Runtime return-type validation plus optional fresh-controller creation."""
+
+    def __init__(
+        self,
+        *,
+        raw_controller: object,
+        label: str,
+        factory: Callable[[], object] | None = None,
+        module_name: str | None = None,
+    ) -> None:
+        if not callable(raw_controller):
+            raise TypeError(f"student controller {label} must be callable")
+        self._controller = cast(Callable[[RobotSensors], object], raw_controller)
+        self._label = label
+        self._factory = factory
+        self._module_name = module_name
+
+    def __call__(self, sensors: RobotSensors) -> RobotCommand:
+        command = self._controller(sensors)
         if not isinstance(command, RobotCommand):
             raise TypeError(
-                f"student controller {module.__name__}.{function_name} must return "
-                f"racing.RobotCommand, got {type(command).__name__}"
+                f"student controller {self._label} must return racing.RobotCommand, got {type(command).__name__}"
             )
         return command
 
-    return controller
+    def copy_for_car(self) -> RobotController:
+        """Return fresh factory/copy state, or this wrapper for a function controller."""
+        if self._factory is not None and self._module_name is not None:
+            return _controller_created_by_factory(factory=self._factory, module_name=self._module_name)
+        copy_for_car = getattr(self._controller, "copy_for_car", None)
+        if not callable(copy_for_car):
+            return self
+        raw_controller = copy_for_car()
+        return _ValidatedRobotController(
+            raw_controller=raw_controller,
+            label=f"{self._label}.copy_for_car()",
+        )
 
 
 def _student_display_name(module: ModuleType) -> str | None:

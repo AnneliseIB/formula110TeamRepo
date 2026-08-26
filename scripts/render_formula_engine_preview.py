@@ -67,7 +67,7 @@ def _preview_motion(seconds: float) -> tuple[float, RobotCommand]:
         return 48.0 + amount * 6.0, RobotCommand(throttle=0.20)
     if seconds < 12.0:
         amount = (seconds - 10.0) / 2.0
-        return 54.0 - amount * 24.0, RobotCommand(brake=0.85)
+        return 54.0 - amount * 24.0, RobotCommand(throttle=-0.85)
     amount = (seconds - 12.0) / 2.0
     return 30.0 - amount * 10.0, RobotCommand(throttle=0.55)
 

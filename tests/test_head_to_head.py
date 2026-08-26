@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from racing.race.head_to_head import (
@@ -8,6 +10,7 @@ from racing.race.head_to_head import (
     HeadToHeadTeamRaceStats,
     classify_head_to_head_winner,
     format_head_to_head_result,
+    format_head_to_head_result_banner,
     head_to_head_race_entries,
     head_to_head_race_margin,
 )
@@ -219,3 +222,80 @@ def test_format_head_to_head_result_preserves_challenger_order_for_tie() -> None
 
     assert summary.splitlines()[0] == "Winner: tie"
     assert header.index("challenger") < header.index("incumbent")
+
+
+def test_format_head_to_head_result_banner_names_winner_and_distances() -> None:
+    result = HeadToHeadResult(
+        challenger_name="candidate",
+        incumbent_name="baseline",
+        round_seconds=30.0,
+        win_margin_m=1.0,
+        races=(
+            HeadToHeadRaceResult(
+                race_index=1,
+                winner="challenger",
+                challenger=HeadToHeadTeamRaceStats(
+                    distances_m=(18.25,),
+                    lap_counts=(0,),
+                    wall_contact_seconds=(0.0,),
+                    car_contact_seconds=(0.0,),
+                ),
+                incumbent=HeadToHeadTeamRaceStats(
+                    distances_m=(12.75,),
+                    lap_counts=(0,),
+                    wall_contact_seconds=(0.0,),
+                    car_contact_seconds=(0.0,),
+                ),
+            ),
+        ),
+    )
+
+    banner = format_head_to_head_result_banner(result)
+
+    assert banner == "WINNER: candidate\ncandidate: 18.2 m\nbaseline: 12.8 m"
+
+
+def test_head_to_head_result_has_versioned_json_compatible_record() -> None:
+    challenger = HeadToHeadTeamRaceStats(
+        distances_m=(12.0,),
+        lap_counts=(1,),
+        wall_contact_seconds=(0.0,),
+        car_contact_seconds=(0.0,),
+    )
+    incumbent = HeadToHeadTeamRaceStats(
+        distances_m=(8.0,),
+        lap_counts=(0,),
+        wall_contact_seconds=(0.5,),
+        car_contact_seconds=(0.0,),
+    )
+    result = HeadToHeadResult(
+        challenger_name="learned",
+        incumbent_name="baseline",
+        round_seconds=30.0,
+        win_margin_m=1.0,
+        races=(
+            HeadToHeadRaceResult(
+                race_index=1,
+                winner="challenger",
+                challenger=challenger,
+                incumbent=incumbent,
+            ),
+        ),
+        random_seed=271,
+        fixed_delta_seconds=1 / 60,
+    )
+
+    record = result.to_dict()
+    encoded = json.dumps(record, allow_nan=False)
+
+    assert record["schema_version"] == 1
+    assert record["fixed_delta_seconds"] == pytest.approx(1 / 60)
+    assert record["summary"] == {
+        "winner": "challenger",
+        "race_count": 1,
+        "challenger_wins": 1,
+        "incumbent_wins": 0,
+        "ties": 0,
+        "aggregate_margin_m": 4.0,
+    }
+    assert '"raw_distances_m": [12.0]' in encoded

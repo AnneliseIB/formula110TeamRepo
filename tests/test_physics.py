@@ -5,13 +5,15 @@ from typing import Any, cast
 
 import pytest
 
-from racing.student.api import RobotCommand
 from racing.physics import (
     DEFAULT_VEHICLE_PHYSICS_CONFIG,
     FORMULA_VEHICLE_PHYSICS_CONFIG,
+    PhysicsScene,
     VehiclePhysicsConfig,
+    apply_robot_vehicle_command,
     attach_static_box,
     create_physics_world,
+    create_robot_vehicle,
     resolve_vehicle_actuator_command,
     vehicle_collision_bounds,
     vehicle_spawn_height,
@@ -20,6 +22,7 @@ from racing.physics import (
     wheel_axis_points,
     wheel_connection_points,
 )
+from racing.student.api import RobotCommand
 
 
 def test_default_physics_config_is_formula_car() -> None:
@@ -54,8 +57,39 @@ def test_resolve_vehicle_command_maps_forward_throttle_and_steering() -> None:
     )
 
     assert command.steering_degrees == pytest.approx(FORMULA_VEHICLE_PHYSICS_CONFIG.max_steering_degrees * 0.25)
-    assert command.engine_force == pytest.approx(-FORMULA_VEHICLE_PHYSICS_CONFIG.max_engine_force * 0.5)
+    assert command.engine_force == pytest.approx(FORMULA_VEHICLE_PHYSICS_CONFIG.max_engine_force * 0.5)
     assert command.brake_force == 0.0
+
+
+def test_forward_motion_rotates_top_of_wheel_toward_front() -> None:
+    core = cast(Any, import_module("panda3d.core"))
+    config = FORMULA_VEHICLE_PHYSICS_CONFIG
+    world = create_physics_world()
+    render = core.NodePath("render")
+    attach_static_box(
+        world=world,
+        render=render,
+        name="wheel-spin-test-floor",
+        position=(0.0, -0.05, 0.0),
+        half_extents=(20.0, 0.05, 20.0),
+        friction=1.0,
+    )
+    robot = create_robot_vehicle(
+        world=world,
+        render=render,
+        name="wheel-spin-test-car",
+        position=(0.0, vehicle_spawn_height(config), 0.0),
+        config=config,
+    )
+    scene = PhysicsScene(world=world, vehicles=[robot])
+    apply_robot_vehicle_command(robot=robot, command=RobotCommand(throttle=0.2))
+
+    for _ in range(12):
+        scene.step(1 / 120)
+
+    front_right_wheel_top = robot.wheel_nodes[1].getQuat(render).xform(core.Vec3(0.0, 0.0, 1.0))
+    assert float(robot.chassis_np.getZ(render)) > 0.0
+    assert float(front_right_wheel_top[2]) > 0.0
 
 
 def test_resolve_vehicle_command_brakes_before_reverse() -> None:

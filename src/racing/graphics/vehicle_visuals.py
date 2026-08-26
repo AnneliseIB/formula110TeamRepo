@@ -8,16 +8,16 @@ from math import atan2, cos, degrees, hypot, pi, radians, sin
 from typing import Any
 
 from racing.game.config import CarShowcaseView
+from racing.graphics.colors import DEFAULT_FORMULA_TEAM_COLOR, ColorRGBA
 from racing.graphics.mesh_utils import mesh_from_quads
+from racing.graphics.render_assets import SceneAssets, lit_entity
+from racing.graphics.track_rendering import add_track_spotlight_binding_updater
 from racing.physics import (
     FORMULA_VEHICLE_PHYSICS_CONFIG,
     REFERENCE_VEHICLE_LOWER_CHASSIS_HALF_WIDTH,
     VehiclePhysicsConfig,
     wheel_axis_points,
 )
-from racing.graphics.render_assets import SceneAssets, lit_entity
-from racing.graphics.track_rendering import add_track_spotlight_binding_updater
-from racing.graphics.colors import DEFAULT_FORMULA_TEAM_COLOR, ColorRGBA
 
 
 @dataclass(slots=True)
@@ -55,6 +55,14 @@ WHEEL_VISUAL_AXLE_ROTATION_Z_DEGREES = 90.0
 WHEEL_RIM_FACE_OFFSET_FRACTION = 0.504
 WHEEL_HUB_FACE_OFFSET_FRACTION = 0.510
 WHEEL_SIDEWALL_MARK_FACE_OFFSET_FRACTION = 0.512
+COCKPIT_INSTRUMENT_BASE_POSITION = (0.0, 0.520, -0.415)
+COCKPIT_INSTRUMENT_BASE_SCALE = (0.115, 0.046, 0.080)
+COCKPIT_INSTRUMENT_MAST_SCALE = (0.014, 0.150, 0.014)
+COCKPIT_INSTRUMENT_MAST_POSITION = (
+    0.0,
+    COCKPIT_INSTRUMENT_BASE_POSITION[1] + COCKPIT_INSTRUMENT_BASE_SCALE[1] / 2 + COCKPIT_INSTRUMENT_MAST_SCALE[1] / 2,
+    -0.405,
+)
 
 
 def add_showcase_floor(*, ursina: Any) -> None:
@@ -425,8 +433,8 @@ def _add_formula_cockpit_details(
         ursina,
         parent=parent,
         model="cube",
-        position=(0.0, 0.520, -0.415),
-        scale=(0.115, 0.046, 0.080),
+        position=COCKPIT_INSTRUMENT_BASE_POSITION,
+        scale=COCKPIT_INSTRUMENT_BASE_SCALE,
         material=assets.black_plastic_material,
         color=(0.004, 0.005, 0.006, 1),
     )
@@ -434,8 +442,8 @@ def _add_formula_cockpit_details(
         ursina,
         parent=parent,
         model="cube",
-        position=(0.0, 0.638, -0.405),
-        scale=(0.014, 0.110, 0.014),
+        position=COCKPIT_INSTRUMENT_MAST_POSITION,
+        scale=COCKPIT_INSTRUMENT_MAST_SCALE,
         material=assets.black_plastic_material,
         color=(0.004, 0.005, 0.006, 1),
     )
@@ -444,7 +452,7 @@ def _add_formula_cockpit_details(
             ursina=ursina,
             parent=parent,
             assets=assets,
-            start=(side * 0.095, 0.310, 0.125),
+            start=(side * 0.095, 0.310, 0.060),
             end=(side * 0.255, 0.335, 0.170),
             thickness=0.014,
             color=(0.006, 0.007, 0.008, 1),
@@ -500,12 +508,12 @@ def _add_formula_suspension(
     front_upright = (front_wheel_inner_x, 0.115, config.wheelbase_half_length)
     rear_upright = (rear_wheel_inner_x, 0.112, -config.wheelbase_half_length)
     bars = (
-        ((side * 0.080, 0.135, 0.485), (front_upright[0], 0.082, front_upright[2] - 0.020)),
-        ((side * 0.130, 0.215, 0.390), (front_upright[0], 0.158, front_upright[2] - 0.018)),
-        ((side * 0.115, 0.120, 0.810), (front_upright[0], 0.078, front_upright[2] + 0.024)),
+        ((side * 0.055, 0.085, 0.485), (front_upright[0], 0.082, front_upright[2] - 0.020)),
+        ((side * 0.070, 0.135, 0.390), (front_upright[0], 0.158, front_upright[2] - 0.018)),
+        ((side * 0.115, 0.062, 0.785), (front_upright[0], 0.078, front_upright[2] + 0.024)),
         ((side * 0.155, 0.135, -0.410), (rear_upright[0], 0.085, rear_upright[2] + 0.020)),
-        ((side * 0.205, 0.210, -0.555), (rear_upright[0], 0.154, rear_upright[2] + 0.018)),
-        ((side * 0.250, 0.112, -0.790), (rear_upright[0], 0.080, rear_upright[2] - 0.024)),
+        ((side * 0.205, 0.186, -0.555), (rear_upright[0], 0.154, rear_upright[2] + 0.018)),
+        ((side * 0.250, 0.062, -0.790), (rear_upright[0], 0.080, rear_upright[2] - 0.024)),
     )
     for start, end in bars:
         _add_xz_bar_between(

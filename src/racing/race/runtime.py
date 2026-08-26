@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from importlib import import_module
+from math import ceil
 from random import Random
 from typing import Any, cast
 
-from racing.student.api import RobotCommand
+from racing.graphics.track_rendering import TRACK_EDGE_BUFFER, TRACK_SURFACE_Y
 from racing.physics import (
     FORMULA_VEHICLE_PHYSICS_CONFIG,
     RobotVehicle,
@@ -22,11 +23,12 @@ from racing.race.progress import (
     TrackPose,
     TrackProgressModel,
     TrackProjection,
+    heading_error_degrees,
     track_pose_at_distance,
 )
 from racing.race.sensors import RobotSensorBuilderState
+from racing.student.api import RobotCommand
 from racing.track.spatial import node_position, track_forward_vector, track_left_vector
-from racing.graphics.track_rendering import TRACK_EDGE_BUFFER, TRACK_SURFACE_Y
 from racing.track.world import TRACK_WIDTH, TrackPoint
 
 DEFAULT_RACE_RANDOM_SEED = 110
@@ -35,6 +37,7 @@ RACE_SPAWN_RANDOM_OFFSET = 41_947
 RACE_SPAWN_EDGE_MARGIN = 0.18 * 2.0
 RACE_GRID_LONGITUDINAL_SPACING_CAR_LENGTHS = 2.25
 RACE_GRID_LANE_OFFSET_FRACTION = 0.5
+RACE_GRID_CURVE_DIRECTION_THRESHOLD_DEGREES = 0.5
 RACE_MARSHAL_RESET_LANE_OFFSET_FRACTION = 0.5
 RACE_MARSHAL_RESET_LONGITUDINAL_SPACING_CAR_LENGTHS = 1.5
 RACE_OFF_TRACK_RESET_DISTANCE_M = TRACK_WIDTH / 2 + TRACK_EDGE_BUFFER
@@ -56,11 +59,6 @@ class RaceContactState:
 
     wall_contact: float = 0.0
     car_contact: float = 0.0
-
-    @property
-    def distance_counts(self) -> bool:
-        """Return whether this tick should count toward clean lap distance."""
-        return self.wall_contact <= 0.0 and self.car_contact <= 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,11 +128,16 @@ def race_spawn_poses(
     car_length_m = vehicle_collision_bounds(config).half_length * 2.0
     longitudinal_spacing_m = car_length_m * RACE_GRID_LONGITUDINAL_SPACING_CAR_LENGTHS
     lane_offset_m = safe_half_width * RACE_GRID_LANE_OFFSET_FRACTION
-    front_side = -1 if rng.random() < 0.5 else 1
+    inside_lateral_sign = _race_inside_lateral_sign(
+        model=model,
+        progress_distance_m=shared_progress,
+        sample_spacing_m=car_length_m,
+    )
+    outside_lateral_sign = -inside_lateral_sign
     grid_slots = [
         (
             shared_progress - slot_index * longitudinal_spacing_m,
-            (front_side if slot_index % 2 == 0 else -front_side) * lane_offset_m,
+            (outside_lateral_sign if slot_index % 2 == 0 else inside_lateral_sign) * lane_offset_m,
         )
         for slot_index in range(car_count)
     ]
@@ -239,7 +242,6 @@ def update_race_runtime_after_step(
     runtime.tracker.update(
         projection.progress_distance_m,
         elapsed_seconds,
-        distance_counts=runtime.contact_state.distance_counts,
         wall_contact=runtime.contact_state.wall_contact > 0.0,
         car_contact=runtime.contact_state.car_contact > 0.0,
     )
@@ -323,10 +325,15 @@ def robot_track_point(robot: RobotVehicle) -> TrackPoint:
 
 
 def robot_score_damage(robot: RobotVehicle) -> float:
-    """Return clamped race-scoring damage for a robot."""
+    """Return clamped damage for race stats and the damage HUD."""
     if robot_is_eliminated(robot):
         return 1.0
     return min(1.0, max(0.0, float(getattr(robot, "damage", 0.0))))
+
+
+def race_scored_distance_m(runtime: RaceCarRuntime) -> float:
+    """Return distance progress after marshal penalties, independent of damage."""
+    return max(0.0, runtime.tracker.best_distance_m - runtime.marshal_penalty_m)
 
 
 def robot_is_eliminated(robot: RobotVehicle) -> bool:
@@ -366,22 +373,38 @@ def reset_robot_vehicle(
     apply_vehicle_command(vehicle=robot.vehicle, command=RobotCommand(), config=robot.config)
 
 
-def quit_ursina_app(*, ursina: Any, app: Any) -> None:
-    """Quit an Ursina app through whichever API is available."""
-    if hasattr(app, "userExit"):
-        app.userExit()
-        return
-    application = getattr(ursina, "application", None)
-    if application is not None and hasattr(application, "quit"):
-        application.quit()
-
-
 def _race_spawn_rng(*, random_seed: int, race_index: int) -> Random:
     return Random(random_seed + race_index * RACE_SPAWN_RANDOM_ROUND_FACTOR + RACE_SPAWN_RANDOM_OFFSET)
 
 
 def _race_grid_front_progress_m(*, model: TrackProgressModel, rng: Random) -> float:
     return rng.random() * model.total_length_m
+
+
+def _race_inside_lateral_sign(
+    *,
+    model: TrackProgressModel,
+    progress_distance_m: float,
+    sample_spacing_m: float,
+) -> int:
+    """Return -1 for a right-side apex and +1 for a left-side apex."""
+    if sample_spacing_m <= 0.0:
+        raise ValueError("sample_spacing_m must be positive")
+    previous_heading = track_pose_at_distance(model, progress_distance_m).heading_degrees
+    sample_count = max(1, ceil(model.total_length_m / sample_spacing_m))
+    for sample_index in range(1, sample_count + 1):
+        next_heading = track_pose_at_distance(
+            model,
+            progress_distance_m + sample_index * sample_spacing_m,
+        ).heading_degrees
+        turn_degrees = heading_error_degrees(
+            current_heading_degrees=previous_heading,
+            target_heading_degrees=next_heading,
+        )
+        if abs(turn_degrees) >= RACE_GRID_CURVE_DIRECTION_THRESHOLD_DEGREES:
+            return -1 if turn_degrees > 0.0 else 1
+        previous_heading = next_heading
+    return 1
 
 
 def _race_spawn_pose_at_grid_slot(*, track_pose: TrackPose, lateral_offset: float, spawn_y: float) -> RaceSpawnPose:

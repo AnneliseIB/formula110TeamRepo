@@ -21,6 +21,9 @@ KILOMETERS_PER_HOUR_TO_METERS_PER_SECOND = 1.0 / 3.6
 WALL_DAMAGE_MIN_CLOSING_SPEED_MPS = 0.25
 VEHICLE_IMPACT_RESPONSE_MULTIPLIER = 2.0
 VEHICLE_IMPACT_MIN_CLOSING_SPEED_MPS = 0.25
+# With forward along +Z, Bullet's positive wheel rotation needs a -X axle so
+# the top of the rendered wheel travels forward rather than backward.
+WHEEL_AXLE_DIRECTION = (-1.0, 0.0, 0.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -405,7 +408,7 @@ def apply_vehicle_command(
     command: RobotCommand,
     config: VehiclePhysicsConfig = DEFAULT_VEHICLE_PHYSICS_CONFIG,
 ) -> None:
-    """Send throttle, steering, and brake values to a Bullet vehicle."""
+    """Send signed throttle and steering values to a Bullet vehicle."""
     actuator_command = resolve_vehicle_actuator_command(
         command=command,
         current_speed_kmh=float(vehicle.getCurrentSpeedKmHour()),
@@ -643,13 +646,6 @@ def resolve_vehicle_actuator_command(
     steering_degrees = bounded.steer * config.max_steering_degrees
     requested_direction = _throttle_direction(bounded.throttle)
 
-    if bounded.brake > 0.0:
-        return VehicleActuatorCommand(
-            steering_degrees=steering_degrees,
-            engine_force=0.0,
-            brake_force=_brake_force_for_amount(bounded.brake, config),
-        )
-
     if requested_direction == 0:
         return VehicleActuatorCommand(
             steering_degrees=steering_degrees,
@@ -680,7 +676,7 @@ def resolve_vehicle_actuator_command(
 
     return VehicleActuatorCommand(
         steering_degrees=steering_degrees,
-        engine_force=-bounded.throttle * config.max_engine_force,
+        engine_force=bounded.throttle * config.max_engine_force,
         brake_force=0.0,
     )
 
@@ -970,7 +966,7 @@ def _configure_wheel(
     wheel.setChassisConnectionPointCs(core.Point3(*connection))
     wheel.setFrontWheel(is_front)
     wheel.setWheelDirectionCs(core.Vec3(0.0, -1.0, 0.0))
-    wheel.setWheelAxleCs(core.Vec3(1.0, 0.0, 0.0))
+    wheel.setWheelAxleCs(core.Vec3(*WHEEL_AXLE_DIRECTION))
     wheel.setWheelRadius(config.wheel_radius)
     wheel.setMaxSuspensionTravelCm(config.max_suspension_travel_cm)
     wheel.setSuspensionStiffness(config.suspension_stiffness)

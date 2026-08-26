@@ -8,8 +8,8 @@ from importlib import import_module
 from random import Random
 from typing import Any, Literal, cast
 
-from racing.student.api import RobotController, RobotSensors
 from racing.graphics.panda_config import configure_headless_panda
+from racing.graphics.track_rendering import add_racing_scene_collisions
 from racing.physics import (
     FORMULA_VEHICLE_PHYSICS_CONFIG,
     PhysicsScene,
@@ -20,7 +20,6 @@ from racing.physics import (
 )
 from racing.race.progress import (
     TrackProjection,
-    damage_adjusted_score,
     default_track_progress_model,
     project_track_position,
 )
@@ -36,17 +35,19 @@ from racing.race.runtime import (
     lap_progress_tracker_for_spawn_pose,
     maybe_marshal_race_runtimes,
     race_contact_states,
+    race_scored_distance_m,
     race_spawn_poses,
     robot_score_damage,
     robot_track_point,
     update_race_runtime_after_step,
 )
 from racing.race.sensors import build_robot_sensors
-from racing.graphics.track_rendering import add_racing_scene_collisions
+from racing.student.api import RobotController, RobotSensors
 
 HEAD_TO_HEAD_DEFAULT_RACE_COUNT = 7
 HEAD_TO_HEAD_COPIES_PER_SIDE = 1
-HEAD_TO_HEAD_DEFAULT_ROUND_SECONDS = 60.0
+HEAD_TO_HEAD_DEFAULT_ROUND_SECONDS = 30.0
+HEAD_TO_HEAD_RESULT_SCHEMA_VERSION = 1
 
 HeadToHeadRole = Literal["challenger", "incumbent"]
 HeadToHeadOutcome = Literal["challenger", "incumbent", "tie"]
@@ -201,6 +202,40 @@ class HeadToHeadTeamRaceStats:
         """Return total distance penalty applied for marshal recoveries."""
         return sum(self.marshal_penalties_m)
 
+    def to_dict(self) -> dict[str, object]:
+        """Return stable, JSON-compatible per-car values and team summaries."""
+        return {
+            "distances_m": list(self.distances_m),
+            "raw_distances_m": list(self.raw_distances_m),
+            "lap_counts": list(self.lap_counts),
+            "wall_contact_seconds": list(self.wall_contact_seconds),
+            "car_contact_seconds": list(self.car_contact_seconds),
+            "damages": list(self.damages),
+            "max_speeds_mps": list(self.max_speeds_mps),
+            "best_lap_times_seconds": list(self.best_lap_times_seconds),
+            "penalized_distances_m": list(self.penalized_distances_m),
+            "low_progress_seconds": list(self.low_progress_seconds),
+            "off_track_seconds": list(self.off_track_seconds),
+            "marshal_counts": list(self.marshal_counts),
+            "marshal_penalties_m": list(self.marshal_penalties_m),
+            "summary": {
+                "best_distance_m": self.best_distance_m,
+                "team_sum_distance_m": self.team_sum_distance_m,
+                "team_sum_raw_distance_m": self.team_sum_raw_distance_m,
+                "total_lap_count": self.total_lap_count,
+                "best_lap_time_seconds": self.best_lap_time_seconds,
+                "max_speed_mps": self.max_speed_mps,
+                "average_damage": self.average_damage,
+                "elimination_count": self.elimination_count,
+                "total_wall_contact_seconds": self.total_wall_contact_seconds,
+                "total_car_contact_seconds": self.total_car_contact_seconds,
+                "total_low_progress_seconds": self.total_low_progress_seconds,
+                "total_off_track_seconds": self.total_off_track_seconds,
+                "total_marshal_count": self.total_marshal_count,
+                "total_marshal_penalty_m": self.total_marshal_penalty_m,
+            },
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class HeadToHeadRaceResult:
@@ -217,6 +252,17 @@ class HeadToHeadRaceResult:
         """Return challenger scored distance minus incumbent scored distance."""
         return head_to_head_race_margin(challenger=self.challenger, incumbent=self.incumbent, scoring=self.scoring)
 
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-compatible record for this race."""
+        return {
+            "race_index": self.race_index,
+            "winner": self.winner,
+            "margin_m": self.margin_m,
+            "scoring": self.scoring,
+            "challenger": self.challenger.to_dict(),
+            "incumbent": self.incumbent.to_dict(),
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class HeadToHeadResult:
@@ -229,6 +275,7 @@ class HeadToHeadResult:
     races: tuple[HeadToHeadRaceResult, ...]
     random_seed: int = DEFAULT_RACE_RANDOM_SEED
     rules: HeadToHeadRaceRules = field(default_factory=HeadToHeadRaceRules)
+    fixed_delta_seconds: float = 1 / 60
 
     @property
     def race_count(self) -> int:
@@ -273,6 +320,27 @@ class HeadToHeadResult:
     def aggregate_margin_m(self) -> float:
         """Return summed challenger-vs-incumbent margin over all races."""
         return sum(race.margin_m for race in self.races)
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a versioned, JSON-compatible experiment result."""
+        return {
+            "schema_version": HEAD_TO_HEAD_RESULT_SCHEMA_VERSION,
+            "challenger_name": self.challenger_name,
+            "incumbent_name": self.incumbent_name,
+            "round_seconds": self.round_seconds,
+            "fixed_delta_seconds": self.fixed_delta_seconds,
+            "random_seed": self.random_seed,
+            "rules": self.rules.to_dict(),
+            "summary": {
+                "winner": self.winner,
+                "race_count": self.race_count,
+                "challenger_wins": self.challenger_wins,
+                "incumbent_wins": self.incumbent_wins,
+                "ties": self.ties,
+                "aggregate_margin_m": self.aggregate_margin_m,
+            },
+            "races": [race.to_dict() for race in self.races],
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,6 +459,7 @@ def run_headless_head_to_head(
             races=races,
             random_seed=random_seed,
             rules=race_rules,
+            fixed_delta_seconds=fixed_delta_seconds,
         )
     finally:
         base.destroy()
@@ -410,6 +479,22 @@ def format_head_to_head_result(result: HeadToHeadResult) -> str:
     for race in result.races:
         lines.append(_head_to_head_race_summary_line(result=result, race=race))
     return "\n".join(lines)
+
+
+def format_head_to_head_result_banner(result: HeadToHeadResult) -> str:
+    """Format the compact winner and distance summary shown over a finished race."""
+    winner_line = (
+        "RESULT: TIE"
+        if result.winner == "tie"
+        else f"WINNER: {_head_to_head_result_role_name(result, result.winner)}"
+    )
+    return "\n".join(
+        (
+            winner_line,
+            f"{result.challenger_name}: {_format_distance_m(_aggregate_role_scored_distance_m(result, 'challenger'))}",
+            f"{result.incumbent_name}: {_format_distance_m(_aggregate_role_scored_distance_m(result, 'incumbent'))}",
+        )
+    )
 
 
 def _head_to_head_winner_line(result: HeadToHeadResult) -> str:
@@ -742,13 +827,7 @@ def head_to_head_team_stats_from_runtimes(
     if len(role_runtimes) == 0:
         raise ValueError(f"expected at least one race result for {role}")
     return HeadToHeadTeamRaceStats(
-        distances_m=tuple(
-            damage_adjusted_score(
-                max(0.0, runtime.tracker.best_distance_m - runtime.marshal_penalty_m),
-                damage=robot_score_damage(runtime.robot),
-            )
-            for runtime in role_runtimes
-        ),
+        distances_m=tuple(race_scored_distance_m(runtime) for runtime in role_runtimes),
         lap_counts=tuple(runtime.tracker.lap_count for runtime in role_runtimes),
         wall_contact_seconds=tuple(runtime.tracker.wall_contact_seconds for runtime in role_runtimes),
         car_contact_seconds=tuple(runtime.tracker.car_contact_seconds for runtime in role_runtimes),

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from importlib import import_module
+from math import cos, pi, sin
 from pathlib import Path
 from typing import Any, cast
 
+from racing.controls.gamepad import sync_gamepad_axes
+from racing.controls.keyboard import manual_drive_command
 from racing.game.config import (
     CameraView,
     CarShowcaseConfig,
@@ -16,7 +19,7 @@ from racing.game.config import (
     configure_window,
     fps_text_for_delta,
 )
-from racing.sound.audio import AudioKeyToggleState, RacingAudioRuntimeLike, create_racing_audio_runtime, update_audio_mute_key
+from racing.game.recording import HumanGameplayRecorder
 from racing.graphics.camera import (
     FORMULA_DRONE_CAMERA_SETTINGS,
     FORMULA_FOLLOW_CAMERA_SETTINGS,
@@ -25,19 +28,6 @@ from racing.graphics.camera import (
     apply_camera_view,
     update_camera_cycle,
 )
-from racing.student.api import RobotCommand
-from racing.controls.gamepad import sync_gamepad_axes
-from racing.race.head_to_head import (
-    HeadToHeadRaceEntry,
-    HeadToHeadRaceResult,
-    HeadToHeadResult,
-    classify_head_to_head_winner,
-    format_head_to_head_result,
-    head_to_head_race_entries,
-    head_to_head_race_margin,
-    head_to_head_team_stats_from_runtimes,
-)
-from racing.controls.keyboard import manual_drive_command
 from racing.graphics.lighting import add_lighting, add_showcase_lighting
 from racing.graphics.panda_config import (
     configure_panda_antialiasing,
@@ -46,45 +36,10 @@ from racing.graphics.panda_config import (
     patch_ursina_window_coordinate_system,
     quiet_panda_image_logs,
 )
-from racing.physics import (
-    FORMULA_VEHICLE_PHYSICS_CONFIG,
-    PhysicsScene,
-    RobotVehicle,
-    apply_robot_vehicle_command,
-    apply_wall_impact_damage,
-    create_physics_world,
-    create_robot_vehicle,
-    vehicle_spawn_height,
-)
-from racing.race.progress import (
-    TrackProjection,
-    default_track_progress_model,
-    project_track_position,
-)
-from racing.race.rules import HEAD_TO_HEAD_DEFAULT_WIN_MARGIN_M, HeadToHeadRaceRules
-from racing.race.runtime import (
-    RaceCarRuntime,
-    RaceContactState,
-    RaceRecoveryConfig,
-    RaceSpawnPose,
-    lap_progress_tracker_for_spawn_pose,
-    maybe_marshal_race_runtimes,
-    quit_ursina_app,
-    race_contact_states,
-    race_spawn_poses,
-    reset_robot_vehicle,
-    robot_score_damage,
-    robot_track_point,
-    seeded_race_start_finish_pose,
-    start_finish_pose_for_progress,
-    update_race_runtime_after_step,
-)
 from racing.graphics.render_assets import create_scene_assets
-from racing.race.sensors import RobotSensorBuilderState, build_robot_sensors
 from racing.graphics.track_rendering import (
     NIGHT_SKY_COLOR,
     START_HEADING_DEGREES,
-    TRACK_SURFACE_Y,
     add_mugello_short_track,
     add_racing_scene_collisions,
     add_trackside_scenery,
@@ -101,7 +56,58 @@ from racing.graphics.vehicle_visuals import (
     create_showcase_robot,
     pose_showcase_car,
 )
-from racing.track.world import START_POSITION, TrackPoint
+from racing.physics import (
+    FORMULA_VEHICLE_PHYSICS_CONFIG,
+    PhysicsScene,
+    RobotVehicle,
+    apply_robot_vehicle_command,
+    apply_wall_impact_damage,
+    create_physics_world,
+    create_robot_vehicle,
+)
+from racing.race.head_to_head import (
+    HeadToHeadRaceEntry,
+    HeadToHeadRaceResult,
+    HeadToHeadResult,
+    classify_head_to_head_winner,
+    controller_for_copy,
+    format_head_to_head_result,
+    format_head_to_head_result_banner,
+    head_to_head_race_entries,
+    head_to_head_race_margin,
+    head_to_head_team_stats_from_runtimes,
+)
+from racing.race.progress import (
+    TrackProjection,
+    default_track_progress_model,
+    project_track_position,
+)
+from racing.race.rules import HEAD_TO_HEAD_DEFAULT_WIN_MARGIN_M, HeadToHeadRaceRules
+from racing.race.runtime import (
+    RaceCarRuntime,
+    RaceContactState,
+    RaceRecoveryConfig,
+    RaceSpawnPose,
+    lap_progress_tracker_for_spawn_pose,
+    maybe_marshal_race_runtimes,
+    race_contact_states,
+    race_scored_distance_m,
+    race_spawn_poses,
+    reset_robot_vehicle,
+    robot_track_point,
+    seeded_race_start_finish_pose,
+    start_finish_pose_for_progress,
+    update_race_runtime_after_step,
+)
+from racing.race.sensors import RobotSensorBuilderState, build_robot_sensors
+from racing.sound.audio import (
+    AudioKeyToggleState,
+    RacingAudioRuntimeLike,
+    create_racing_audio_runtime,
+    update_audio_mute_key,
+)
+from racing.student.api import RobotCommand, RobotController
+from racing.track.world import TrackPoint
 
 PLAYABLE_MAX_FRAME_DELTA_SECONDS = 0.25
 PLAYABLE_MAX_FIXED_STEPS_PER_FRAME = 8
@@ -112,8 +118,11 @@ DAMAGE_HUD_MAX_WIDTH = 0.78
 DAMAGE_HUD_MIN_WIDTH = 0.42
 DAMAGE_HUD_HEIGHT = 0.055
 DAMAGE_HUD_BOTTOM_Y = -0.915
-DAMAGE_HUD_ROW_SPACING = 0.088
+DAMAGE_HUD_ROW_SPACING = 0.150
 DAMAGE_HUD_EMPTY_WIDTH = 0.004
+DAMAGE_HUD_LABEL_OFFSET_Y = 0.082
+DAMAGE_HUD_LABEL_SCALE = 0.045
+HEAD_TO_HEAD_CAR_LABEL_BACKGROUND_ALPHA = 0.5
 DAMAGE_HUD_SHADOW_COLOR = (0.0, 0.0, 0.0, 0.62)
 DAMAGE_HUD_TRACK_COLOR = (0.020, 0.023, 0.030, 0.92)
 DAMAGE_HUD_FRAME_COLOR = (0.92, 0.94, 0.98, 0.80)
@@ -170,6 +179,7 @@ class DamageHudBar:
     fill: Any
     cap: Any
     accent: Any
+    label: Any | None = None
 
 
 @dataclass(slots=True)
@@ -179,6 +189,24 @@ class AudioHudControl:
     button: Any
     label: Any
     key_state: AudioKeyToggleState
+
+
+@dataclass(slots=True)
+class HeadToHeadCarLabel:
+    """Fixed-size screen-space name tag that follows a race car."""
+
+    background: Any
+    text: Any
+
+
+@dataclass(frozen=True, slots=True)
+class HeadToHeadCarLabelLayout:
+    """Camera-specific size and placement for a floating car label."""
+
+    width: float
+    height: float
+    text_scale: float
+    vertical_offset: float
 
 
 def _follow_camera_settings_for_view(view: CameraView) -> FollowCameraSettings:
@@ -193,6 +221,8 @@ def build_scene(config: GameConfig) -> RunnableApp:
     """Create the single-car scene used for manual driving or one student controller."""
     if config.fixed_delta_seconds <= 0.0:
         raise ValueError("fixed_delta_seconds must be positive")
+    if config.human_recording_path is not None and config.student_controller is not None:
+        raise ValueError("human gameplay recording is only available with manual control")
 
     app_kwargs: dict[str, Any] = {
         "title": config.title,
@@ -205,6 +235,8 @@ def build_scene(config: GameConfig) -> RunnableApp:
     if config.window_type is not None:
         app_kwargs["window_type"] = config.window_type
     ursina, app = _create_configured_ursina_app(app_kwargs=app_kwargs)
+    human_recorder = None if config.human_recording_path is None else HumanGameplayRecorder(config.human_recording_path)
+    app.human_gameplay_recorder = human_recorder
     if config.window_type is None:
         configure_window(ursina.window, config)
     app.setBackgroundColor(*NIGHT_SKY_COLOR)
@@ -214,20 +246,30 @@ def build_scene(config: GameConfig) -> RunnableApp:
     physics_scene = PhysicsScene(world=physics_world, vehicles=[])
 
     track_model = default_track_progress_model()
-    spawn_position = (
-        config.spawn_position
-        if config.spawn_position is not None
-        else (
-            START_POSITION.x,
-            vehicle_spawn_height(FORMULA_VEHICLE_PHYSICS_CONFIG, surface_y=TRACK_SURFACE_Y),
-            START_POSITION.z,
-        )
+    seeded_spawn_pose = race_spawn_poses(
+        1,
+        model=track_model,
+        config=FORMULA_VEHICLE_PHYSICS_CONFIG,
+        random_seed=config.random_seed,
+        race_index=1,
     )
+    default_spawn_pose = seeded_spawn_pose[0]
+    if config.spawn_position is None:
+        spawn_position = default_spawn_pose.position
+        default_spawn_heading_degrees = default_spawn_pose.heading_degrees
+        default_spawn_progress_distance_m = default_spawn_pose.progress_distance_m
+    else:
+        spawn_position = config.spawn_position
+        default_spawn_heading_degrees = START_HEADING_DEGREES
+        default_spawn_progress_distance_m = project_track_position(
+            track_model,
+            TrackPoint(spawn_position[0], spawn_position[2]),
+        ).progress_distance_m
     spawn_heading_degrees = (
-        START_HEADING_DEGREES if config.spawn_heading_degrees is None else config.spawn_heading_degrees
+        default_spawn_heading_degrees if config.spawn_heading_degrees is None else config.spawn_heading_degrees
     )
     spawn_progress_distance_m = (
-        project_track_position(track_model, TrackPoint(spawn_position[0], spawn_position[2])).progress_distance_m
+        default_spawn_progress_distance_m
         if config.spawn_progress_distance_m is None
         else config.spawn_progress_distance_m
     )
@@ -323,6 +365,20 @@ def build_scene(config: GameConfig) -> RunnableApp:
                 if config.student_controller is None:
                     sync_gamepad_axes(ursina.held_keys)
                     command = manual_drive_command(ursina.held_keys)
+                    if human_recorder is not None:
+                        sensors, sensor_state = build_robot_sensors(
+                            physics_world=physics_world,
+                            robot=robot,
+                            track_model=track_model,
+                            time_s=simulation_time_s,
+                            dt_s=config.fixed_delta_seconds,
+                            previous_state=sensor_state,
+                        )
+                        human_recorder.record(
+                            simulation_time_s=simulation_time_s,
+                            sensors=sensors,
+                            command=command,
+                        )
                 else:
                     sensors, sensor_state = build_robot_sensors(
                         physics_world=physics_world,
@@ -502,6 +558,7 @@ def build_head_to_head_viewer_scene(config: HeadToHeadViewerConfig) -> RunnableA
         race_index=1,
         random_seed=config.random_seed,
     )
+    controllers = _head_to_head_viewer_controllers(config=config, entries=entries)
     spawn_poses = race_spawn_poses(
         len(entries),
         model=model,
@@ -510,7 +567,6 @@ def build_head_to_head_viewer_scene(config: HeadToHeadViewerConfig) -> RunnableA
         race_index=1,
     )
     runtimes: list[RaceCarRuntime] = []
-    team_markers: list[Any | None] = []
     for index, (entry, spawn_pose) in enumerate(zip(entries, spawn_poses, strict=True)):
         robot = create_robot_vehicle(
             world=physics_world,
@@ -527,8 +583,7 @@ def build_head_to_head_viewer_scene(config: HeadToHeadViewerConfig) -> RunnableA
             assets=assets,
             team_color=_head_to_head_car_paint_color(config=config, entry=entry),
         )
-        team_marker, label = _add_head_to_head_car_label(ursina=ursina, robot=robot, config=config, entry=entry)
-        team_markers.append(team_marker)
+        label = _add_head_to_head_car_label(ursina=ursina, config=config, entry=entry)
         _style_head_to_head_label(label=label, config=config, entry=entry)
         runtimes.append(
             RaceCarRuntime(
@@ -552,10 +607,55 @@ def build_head_to_head_viewer_scene(config: HeadToHeadViewerConfig) -> RunnableA
         track_model=model,
     )
 
-    status_display = ursina.Text(text="", position=(-0.88, 0.46), scale=0.60, color=(1, 1, 1, 1), background=True)
-    race_display = ursina.Text(text="", position=(-0.88, 0.38), scale=0.50, color=(1, 1, 1, 1), background=True)
+    hud_parent = ursina.application.base.aspect2d
+    hud_aspect_ratio = float(ursina.window.aspect_ratio)
+    hud_left_x = -hud_aspect_ratio + 0.06
+    live_hud_width = 0.92
+    _panda2d_hud_card(
+        parent=hud_parent,
+        name="head-to-head-status-background",
+        position=(hud_left_x + live_hud_width / 2.0, 0.89),
+        scale=(live_hud_width, 0.16),
+        color=(0.020, 0.023, 0.030, 0.90),
+        bin_order=90,
+    )
+    status_display = _panda2d_hud_text(
+        parent=hud_parent,
+        name="head-to-head-status",
+        text="",
+        position=(hud_left_x + 0.04, 0.87),
+        scale=0.060,
+        color=(0.96, 0.98, 1.0, 1.0),
+        bin_order=91,
+        align_left=True,
+    )
+    result_background = _panda2d_hud_card(
+        parent=hud_parent,
+        name="head-to-head-result-background",
+        position=(0.0, 0.14),
+        scale=(1.72, 0.48),
+        color=(0.020, 0.023, 0.030, 0.94),
+        bin_order=110,
+    )
+    result_display = _panda2d_hud_text(
+        parent=hud_parent,
+        name="head-to-head-result",
+        text="",
+        position=(0.0, 0.24),
+        scale=0.086,
+        color=(1.0, 1.0, 1.0, 1.0),
+        bin_order=111,
+    )
+    result_background.hide()
+    result_display.hide()
     damage_bars = _add_damage_hud_bars(
         ursina=ursina, colors=tuple(_head_to_head_team_color(config=config, role=entry.role) for entry in entries)
+    )
+    _add_head_to_head_damage_hud_labels(
+        ursina=ursina,
+        bars=damage_bars,
+        config=config,
+        entries=entries,
     )
     audio_runtime = create_racing_audio_runtime(ursina=ursina, config=config.audio)
     _register_audio_vehicles(audio_runtime=audio_runtime, robots=tuple(runtime.robot for runtime in runtimes))
@@ -564,9 +664,12 @@ def build_head_to_head_viewer_scene(config: HeadToHeadViewerConfig) -> RunnableA
     race_index = 1
     race_elapsed_seconds = 0.0
     simulation_accumulator_seconds = 0.0
+    race_concluded = False
     completed_race_results: list[HeadToHeadRaceResult] = []
 
-    def start_race(next_race_index: int) -> tuple[HeadToHeadRaceEntry, ...]:
+    def start_race(
+        next_race_index: int,
+    ) -> tuple[tuple[HeadToHeadRaceEntry, ...], tuple[RobotController | None, ...]]:
         """Reset cars, labels, and start/finish art for the next race."""
         nonlocal race_elapsed_seconds
         race_elapsed_seconds = 0.0
@@ -602,8 +705,8 @@ def build_head_to_head_viewer_scene(config: HeadToHeadViewerConfig) -> RunnableA
             position=next_start_finish_pose.position,
             heading_degrees=next_start_finish_pose.heading_degrees,
         )
-        for index, (runtime, team_marker, entry, spawn_pose) in enumerate(
-            zip(runtimes, team_markers, next_entries, next_spawn_poses, strict=True)
+        for index, (runtime, entry, spawn_pose) in enumerate(
+            zip(runtimes, next_entries, next_spawn_poses, strict=True)
         ):
             runtime.tracker = lap_progress_tracker_for_spawn_pose(model=model, spawn_pose=spawn_pose)
             runtime.stuck_seconds = 0.0
@@ -626,28 +729,37 @@ def build_head_to_head_viewer_scene(config: HeadToHeadViewerConfig) -> RunnableA
             apply_robot_team_color(
                 robot=runtime.robot, assets=assets, team_color=_head_to_head_car_paint_color(config=config, entry=entry)
             )
-            if team_marker is not None:
-                team_marker.color = team_color
             _style_damage_hud_bar(bar=damage_bars[index], color=team_color)
             _style_head_to_head_label(label=runtime.label, config=config, entry=entry)
+            _update_head_to_head_damage_hud_label(
+                bar=damage_bars[index],
+                config=config,
+                entry=entry,
+                runtime=runtime,
+            )
             runtime.robot.chassis_np.setName(f"h2h-robot-{entry.role}-{entry.copy_index}-{index}")
-        return next_entries
+        return next_entries, _head_to_head_viewer_controllers(config=config, entries=next_entries)
 
     def update() -> None:
         """Advance the head-to-head viewer by one rendered frame."""
-        nonlocal entries, race_elapsed_seconds, race_index, simulation_accumulator_seconds
+        nonlocal controllers, entries, race_concluded, race_elapsed_seconds, race_index, simulation_accumulator_seconds
         frame_delta_seconds = min(float(ursina.time.dt), 0.25)
         update_camera_cycle(camera_rig, cycle_key_down=bool(ursina.held_keys["v"]))
         _update_audio_key_control(
             audio_control=audio_control, audio_runtime=audio_runtime, mute_key_down=bool(ursina.held_keys["m"])
         )
+        if race_concluded:
+            audio_runtime.update(frame_delta_seconds)
+            _sync_audio_hud_control(audio_control=audio_control, audio_runtime=audio_runtime)
+            return
 
         simulation_accumulator_seconds += frame_delta_seconds
         while simulation_accumulator_seconds >= config.fixed_delta_seconds:
-            for entry, runtime in zip(entries, runtimes, strict=True):
+            for entry, controller, runtime in zip(entries, controllers, runtimes, strict=True):
                 command = _head_to_head_viewer_command(
                     config=config,
                     entry=entry,
+                    controller=controller,
                     model=model,
                     runtime=runtime,
                     physics_world=physics_world,
@@ -703,13 +815,13 @@ def build_head_to_head_viewer_scene(config: HeadToHeadViewerConfig) -> RunnableA
             follow_settings=_follow_camera_settings_for_view(camera_rig.view),
             track_model=model,
         )
+        _update_head_to_head_car_labels(ursina=ursina, view=camera_rig.view, runtimes=tuple(runtimes))
         audio_runtime.update(frame_delta_seconds)
         _sync_audio_hud_control(audio_control=audio_control, audio_runtime=audio_runtime)
         _update_head_to_head_hud(
             status_display=status_display,
-            race_display=race_display,
+            damage_bars=damage_bars,
             config=config,
-            race_rules=race_rules,
             race_index=race_index,
             entries=entries,
             runtimes=tuple(runtimes),
@@ -730,24 +842,34 @@ def build_head_to_head_viewer_scene(config: HeadToHeadViewerConfig) -> RunnableA
             )
         )
         if race_index >= config.race_count:
-            print(
-                format_head_to_head_result(
-                    HeadToHeadResult(
-                        challenger_name=config.challenger_name,
-                        incumbent_name=config.incumbent_name,
-                        round_seconds=config.round_seconds,
-                        win_margin_m=race_rules.win_margin_m,
-                        races=tuple(completed_race_results),
-                        random_seed=config.random_seed,
-                        rules=race_rules,
-                    )
-                )
+            final_result = HeadToHeadResult(
+                challenger_name=config.challenger_name,
+                incumbent_name=config.incumbent_name,
+                round_seconds=config.round_seconds,
+                win_margin_m=race_rules.win_margin_m,
+                races=tuple(completed_race_results),
+                random_seed=config.random_seed,
+                rules=race_rules,
+                fixed_delta_seconds=config.fixed_delta_seconds,
             )
-            quit_ursina_app(ursina=ursina, app=app)
+            print(format_head_to_head_result(final_result))
+            _set_panda2d_hud_text(result_display, format_head_to_head_result_banner(final_result))
+            _set_panda2d_hud_text_color(
+                result_display,
+                _head_to_head_result_color(config=config, result=final_result),
+            )
+            result_background.show()
+            result_display.show()
+            for runtime in runtimes:
+                command = RobotCommand()
+                audio_runtime.record_command(runtime.robot, command)
+                apply_robot_vehicle_command(robot=runtime.robot, command=command)
+            race_concluded = True
+            simulation_accumulator_seconds = 0.0
             return
 
         race_index += 1
-        entries = start_race(race_index)
+        entries, controllers = start_race(race_index)
         simulation_accumulator_seconds = 0.0
 
     ursina.Entity(name="head_to_head_viewer_loop", update=update, ignore_paused=True)
@@ -802,6 +924,7 @@ def _head_to_head_viewer_command(
     *,
     config: HeadToHeadViewerConfig,
     entry: HeadToHeadRaceEntry,
+    controller: RobotController | None,
     model: Any,
     runtime: RaceCarRuntime,
     physics_world: Any,
@@ -813,7 +936,6 @@ def _head_to_head_viewer_command(
     if _head_to_head_viewer_keyboard_controlled(config=config, entry=entry):
         sync_gamepad_axes(held_keys)
         return manual_drive_command(held_keys)
-    controller = _head_to_head_viewer_controller(config=config, entry=entry)
     if controller is None:
         raise ValueError("head-to-head entry has no controller")
     sensors, runtime.sensor_state = build_robot_sensors(
@@ -829,7 +951,20 @@ def _head_to_head_viewer_command(
     return controller(sensors)
 
 
-def _head_to_head_viewer_controller(*, config: HeadToHeadViewerConfig, entry: HeadToHeadRaceEntry) -> Any:
+def _head_to_head_viewer_controllers(
+    *, config: HeadToHeadViewerConfig, entries: tuple[HeadToHeadRaceEntry, ...]
+) -> tuple[RobotController | None, ...]:
+    """Create independent controller state for every watched car and race."""
+    controllers: list[RobotController | None] = []
+    for entry in entries:
+        prototype = _head_to_head_viewer_controller(config=config, entry=entry)
+        controllers.append(None if prototype is None else controller_for_copy(prototype))
+    return tuple(controllers)
+
+
+def _head_to_head_viewer_controller(
+    *, config: HeadToHeadViewerConfig, entry: HeadToHeadRaceEntry
+) -> RobotController | None:
     if entry.role == "challenger":
         return config.challenger_controller
     return config.incumbent_controller
@@ -877,28 +1012,103 @@ def _head_to_head_runtime_node_name(node: Any) -> str:
     return str(node.getName()) if hasattr(node, "getName") else ""
 
 
-def _style_head_to_head_label(*, label: Any | None, config: HeadToHeadViewerConfig, entry: HeadToHeadRaceEntry) -> None:
+def _style_head_to_head_label(
+    *, label: HeadToHeadCarLabel | None, config: HeadToHeadViewerConfig, entry: HeadToHeadRaceEntry
+) -> None:
     if label is None:
         return
-    label.text = _head_to_head_car_label(config=config, entry=entry)
-    label.color = _head_to_head_team_color(config=config, role=entry.role)
+    team_color = _head_to_head_team_color(config=config, role=entry.role)
+    label.background.setColor(
+        team_color[0],
+        team_color[1],
+        team_color[2],
+        HEAD_TO_HEAD_CAR_LABEL_BACKGROUND_ALPHA,
+    )
+    _set_panda2d_hud_text(label.text, _head_to_head_car_label(config=config, entry=entry))
+    _set_panda2d_hud_text_color(label.text, (1.0, 1.0, 1.0, 1.0))
 
 
 def _add_head_to_head_car_label(
-    *, ursina: Any, robot: Any, config: HeadToHeadViewerConfig, entry: HeadToHeadRaceEntry
-) -> tuple[Any | None, Any]:
-    color = _head_to_head_team_color(config=config, role=entry.role)
-    label = ursina.Text(
-        text=_head_to_head_car_label(config=config, entry=entry),
-        parent=robot.chassis_np,
-        position=(0.0, 1.05, 0.0),
-        scale=1.2,
-        origin=(0.0, 0.0),
-        color=color,
-        billboard=True,
-        background=False,
+    *, ursina: Any, config: HeadToHeadViewerConfig, entry: HeadToHeadRaceEntry
+) -> HeadToHeadCarLabel:
+    parent = ursina.application.base.aspect2d
+    team_color = _head_to_head_team_color(config=config, role=entry.role)
+    background = _panda2d_hud_rounded_card(
+        parent=parent,
+        name="head-to-head-car-label-background",
+        position=(0.0, 0.0),
+        scale=(0.44, 0.088),
+        color=(
+            team_color[0],
+            team_color[1],
+            team_color[2],
+            HEAD_TO_HEAD_CAR_LABEL_BACKGROUND_ALPHA,
+        ),
+        bin_order=100,
     )
-    return None, label
+    text = _panda2d_hud_text(
+        parent=parent,
+        name="head-to-head-car-label",
+        text=_head_to_head_car_label(config=config, entry=entry),
+        position=(0.0, -0.014),
+        scale=0.042,
+        color=(1.0, 1.0, 1.0, 1.0),
+        bin_order=101,
+    )
+    return HeadToHeadCarLabel(background=background, text=text)
+
+
+def _update_head_to_head_car_labels(
+    *, ursina: Any, view: CameraView, runtimes: tuple[RaceCarRuntime, ...]
+) -> None:
+    layout = head_to_head_car_label_layout(view)
+    for runtime in runtimes:
+        if not isinstance(runtime.label, HeadToHeadCarLabel):
+            continue
+        screen_position = _head_to_head_car_label_screen_position(ursina=ursina, robot=runtime.robot)
+        if screen_position is None:
+            runtime.label.background.hide()
+            runtime.label.text.hide()
+            continue
+        runtime.label.background.show()
+        runtime.label.text.show()
+        label_x, label_y = screen_position
+        runtime.label.background.setScale(layout.width, layout.height, 1.0)
+        runtime.label.text.setScale(layout.text_scale)
+        runtime.label.background.setPos(label_x, label_y + layout.vertical_offset, 0.0)
+        runtime.label.text.setPos(label_x, label_y + layout.vertical_offset - layout.height * 0.15, 0.0)
+
+
+def head_to_head_car_label_layout(view: CameraView) -> HeadToHeadCarLabelLayout:
+    """Choose a readable floating-label layout for a camera view."""
+    if view in (CameraView.TOP_DOWN, CameraView.THREE_QUARTER):
+        return HeadToHeadCarLabelLayout(width=0.34, height=0.070, text_scale=0.034, vertical_offset=0.090)
+    if view is CameraView.FOLLOW:
+        return HeadToHeadCarLabelLayout(width=0.40, height=0.080, text_scale=0.038, vertical_offset=0.170)
+    return HeadToHeadCarLabelLayout(width=0.42, height=0.084, text_scale=0.040, vertical_offset=0.110)
+
+
+def _head_to_head_car_label_screen_position(*, ursina: Any, robot: RobotVehicle) -> tuple[float, float] | None:
+    car_position = robot.chassis_np.getPos(ursina.scene)
+    camera_relative = ursina.camera.getRelativePoint(
+        ursina.scene,
+        ursina.Vec3(float(car_position[0]), float(car_position[1]) + 0.95, float(car_position[2])),
+    )
+    projected = active_scene_camera_lens(ursina).getProjectionMat().xform(
+        ursina.Vec4(float(camera_relative[0]), float(camera_relative[1]), float(camera_relative[2]), 1.0)
+    )
+    if float(projected[3]) <= 0.0:
+        return None
+    inverse_w = 1.0 / float(projected[3])
+    return (
+        float(projected[0]) * inverse_w * float(ursina.camera.aspect_ratio),
+        float(projected[1]) * inverse_w,
+    )
+
+
+def active_scene_camera_lens(ursina: Any) -> Any:
+    """Return the lens currently installed on Panda's scene camera."""
+    return ursina.application.base.cam.node().getLens()
 
 
 def _head_to_head_car_label(*, config: HeadToHeadViewerConfig, entry: HeadToHeadRaceEntry) -> str:
@@ -910,6 +1120,12 @@ def _head_to_head_team_color(*, config: HeadToHeadViewerConfig, role: str) -> Co
     if role == "challenger":
         return config.challenger_team_color
     return config.incumbent_team_color
+
+
+def _head_to_head_result_color(*, config: HeadToHeadViewerConfig, result: HeadToHeadResult) -> ColorRGBA:
+    if result.winner == "tie":
+        return (1.0, 1.0, 1.0, 1.0)
+    return _head_to_head_team_color(config=config, role=result.winner)
 
 
 def _head_to_head_car_paint_color(*, config: HeadToHeadViewerConfig, entry: HeadToHeadRaceEntry) -> ColorRGBA:
@@ -1082,6 +1298,52 @@ def _add_damage_hud_bars(*, ursina: Any, colors: tuple[ColorRGBA, ...]) -> tuple
     return tuple(bars)
 
 
+def _add_head_to_head_damage_hud_labels(
+    *,
+    ursina: Any,
+    bars: tuple[DamageHudBar, ...],
+    config: HeadToHeadViewerConfig,
+    entries: tuple[HeadToHeadRaceEntry, ...],
+) -> None:
+    parent = ursina.application.base.aspect2d
+    for bar, entry in zip(bars, entries, strict=True):
+        bar.label = _panda2d_hud_text(
+            parent=parent,
+            name="head-to-head-damage-label",
+            text=head_to_head_damage_hud_text(config=config, entry=entry, distance_m=0.0),
+            position=(bar.slot.center_x, bar.slot.center_y + DAMAGE_HUD_LABEL_OFFSET_Y),
+            scale=DAMAGE_HUD_LABEL_SCALE,
+            color=(0.96, 0.98, 1.0, 1.0),
+            bin_order=86,
+        )
+
+
+def _update_head_to_head_damage_hud_label(
+    *,
+    bar: DamageHudBar,
+    config: HeadToHeadViewerConfig,
+    entry: HeadToHeadRaceEntry,
+    runtime: RaceCarRuntime,
+) -> None:
+    if bar.label is None:
+        return
+    _set_panda2d_hud_text(
+        bar.label,
+        head_to_head_damage_hud_text(
+            config=config,
+            entry=entry,
+            distance_m=_head_to_head_runtime_score(runtime),
+        ),
+    )
+
+
+def head_to_head_damage_hud_text(
+    *, config: HeadToHeadViewerConfig, entry: HeadToHeadRaceEntry, distance_m: float
+) -> str:
+    """Format the compact label positioned above one car's damage bar."""
+    return f"{_head_to_head_car_label(config=config, entry=entry)}  {distance_m:.1f} m"
+
+
 def _style_damage_hud_bar(*, bar: DamageHudBar, color: ColorRGBA) -> None:
     bar.accent.setColor(*color)
     bar.shadow.setColor(*DAMAGE_HUD_SHADOW_COLOR)
@@ -1132,13 +1394,75 @@ def _panda2d_hud_card(
     return card
 
 
+def _panda2d_hud_rounded_card(
+    *,
+    parent: Any,
+    name: str,
+    position: tuple[float, float],
+    scale: tuple[float, float],
+    color: ColorRGBA,
+    bin_order: int,
+    corner_radius_fraction: float = 0.28,
+    corner_segments: int = 6,
+) -> Any:
+    """Create an antialiased-looking rounded rectangle in the native 2D HUD."""
+    core = cast(Any, import_module("panda3d.core"))
+    radius_y = min(0.5, max(0.0, corner_radius_fraction))
+    radius_x = min(0.5, radius_y * scale[1] / scale[0]) if scale[0] > 0.0 else 0.0
+    corners = (
+        (0.5 - radius_x, -0.5 + radius_y, -pi / 2.0),
+        (0.5 - radius_x, 0.5 - radius_y, 0.0),
+        (-0.5 + radius_x, 0.5 - radius_y, pi / 2.0),
+        (-0.5 + radius_x, -0.5 + radius_y, pi),
+    )
+    boundary: list[tuple[float, float]] = []
+    for center_x, center_y, start_angle in corners:
+        for segment_index in range(corner_segments + 1):
+            angle = start_angle + pi / 2.0 * segment_index / corner_segments
+            boundary.append((center_x + cos(angle) * radius_x, center_y + sin(angle) * radius_y))
+
+    vertex_data = core.GeomVertexData(name, core.GeomVertexFormat.getV3(), core.Geom.UHStatic)
+    vertex_data.setNumRows(len(boundary) + 1)
+    vertex_writer = core.GeomVertexWriter(vertex_data, "vertex")
+    vertex_writer.addData3f(0.0, 0.0, 0.0)
+    for x, y in boundary:
+        vertex_writer.addData3f(x, y, 0.0)
+
+    triangles = core.GeomTriangles(core.Geom.UHStatic)
+    for boundary_index in range(len(boundary)):
+        triangles.addVertices(0, boundary_index + 1, (boundary_index + 1) % len(boundary) + 1)
+    geometry = core.Geom(vertex_data)
+    geometry.addPrimitive(triangles)
+    geometry_node = core.GeomNode(name)
+    geometry_node.addGeom(geometry)
+    card = parent.attachNewNode(geometry_node)
+    card.setPos(position[0], position[1], 0.0)
+    card.setScale(scale[0], scale[1], 1.0)
+    card.setColor(*color)
+    card.setTransparency(core.TransparencyAttrib.MAlpha)
+    card.setTwoSided(True)
+    card.setDepthTest(False)
+    card.setDepthWrite(False)
+    card.setBin("fixed", bin_order)
+    card.setLightOff(1)
+    return card
+
+
 def _panda2d_hud_text(
-    *, parent: Any, name: str, text: str, position: tuple[float, float], scale: float, color: ColorRGBA, bin_order: int
+    *,
+    parent: Any,
+    name: str,
+    text: str,
+    position: tuple[float, float],
+    scale: float,
+    color: ColorRGBA,
+    bin_order: int,
+    align_left: bool = False,
 ) -> Any:
     core = cast(Any, import_module("panda3d.core"))
     text_node = core.TextNode(name)
     text_node.setText(text)
-    text_node.setAlign(core.TextNode.ACenter)
+    text_node.setAlign(core.TextNode.ALeft if align_left else core.TextNode.ACenter)
     text_node.setTextColor(*color)
     text_path = parent.attachNewNode(text_node)
     text_path.setPos(position[0], position[1], 0.0)
@@ -1154,6 +1478,12 @@ def _set_panda2d_hud_text(text_path: Any, text: str) -> None:
     node = text_path.node()
     if hasattr(node, "setText"):
         node.setText(text)
+
+
+def _set_panda2d_hud_text_color(text_path: Any, color: ColorRGBA) -> None:
+    node = text_path.node()
+    if hasattr(node, "setTextColor"):
+        node.setTextColor(*color)
 
 
 def damage_hud_fill_color(*, damage: float, eliminated: bool) -> ColorRGBA:
@@ -1183,56 +1513,24 @@ def _clamp01(value: float) -> float:
 def _update_head_to_head_hud(
     *,
     status_display: Any,
-    race_display: Any,
+    damage_bars: tuple[DamageHudBar, ...],
     config: HeadToHeadViewerConfig,
-    race_rules: HeadToHeadRaceRules,
     race_index: int,
     entries: tuple[HeadToHeadRaceEntry, ...],
     runtimes: tuple[RaceCarRuntime, ...],
     race_elapsed_seconds: float,
 ) -> None:
     time_left = max(0.0, config.round_seconds - race_elapsed_seconds)
-    challenger_distance = _head_to_head_scored_distance(
-        entries=entries, runtimes=runtimes, role="challenger", race_rules=race_rules
+    _set_panda2d_hud_text(
+        status_display,
+        f"Race {race_index}/{config.race_count}   Time {time_left:04.1f}s",
     )
-    incumbent_distance = _head_to_head_scored_distance(
-        entries=entries, runtimes=runtimes, role="incumbent", race_rules=race_rules
-    )
-    status_display.text = (
-        f"Race {race_index}/{config.race_count}   "
-        f"Time {time_left:04.1f}s   "
-        f"{_short_head_to_head_name(config.challenger_name, max_length=18)} {challenger_distance:05.1f}m   "
-        f"{_short_head_to_head_name(config.incumbent_name, max_length=18)} {incumbent_distance:05.1f}m"
-    )
-    race_display.text = "   ".join(
-        f"{_head_to_head_car_label(config=config, entry=entry)}: "
-        f"{runtime.tracker.lap_count}L {_head_to_head_runtime_score(runtime):05.1f}m "
-        f"W{runtime.tracker.wall_contact_seconds:03.1f} C{runtime.tracker.car_contact_seconds:03.1f} "
-        f"S{runtime.low_progress_seconds:03.1f} M{runtime.marshal_count}"
-        for entry, runtime in zip(entries, runtimes, strict=True)
-    )
-
-
-def _head_to_head_scored_distance(
-    *,
-    entries: tuple[HeadToHeadRaceEntry, ...],
-    runtimes: tuple[RaceCarRuntime, ...],
-    role: str,
-    race_rules: HeadToHeadRaceRules,
-) -> float:
-    distances = tuple(
-        _head_to_head_runtime_score(runtime)
-        for entry, runtime in zip(entries, runtimes, strict=True)
-        if entry.role == role
-    )
-    if race_rules.scoring == "team-sum":
-        return sum(distances)
-    return max(distances)
+    for bar, entry, runtime in zip(damage_bars, entries, runtimes, strict=True):
+        _update_head_to_head_damage_hud_label(bar=bar, config=config, entry=entry, runtime=runtime)
 
 
 def _head_to_head_runtime_score(runtime: RaceCarRuntime) -> float:
-    raw_score = max(0.0, runtime.tracker.best_distance_m - runtime.marshal_penalty_m)
-    return raw_score * (1.0 - robot_score_damage(runtime.robot))
+    return race_scored_distance_m(runtime)
 
 
 def _head_to_head_race_result_from_runtimes(

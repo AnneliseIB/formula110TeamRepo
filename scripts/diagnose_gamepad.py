@@ -72,7 +72,6 @@ def _diagnostic_lines(*, snapshots: tuple[GamepadAxisSnapshot, ...], command: An
             "Racing command:",
             f"  throttle: {command.throttle: .3f}",
             f"  steer:    {command.steer: .3f}",
-            f"  brake:    {command.brake: .3f}",
         )
     )
     return tuple(lines)

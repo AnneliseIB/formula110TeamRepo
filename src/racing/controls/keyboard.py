@@ -17,11 +17,10 @@ def keyboard_command(held_keys: Any) -> RobotCommand:
     """Map held arrow keys to a normalized robot command."""
     throttle_forward = _key_down(held_keys, "up arrow")
     throttle_reverse = _key_down(held_keys, "down arrow")
-    brake = throttle_forward and throttle_reverse
     steer_right = _key_down(held_keys, "right arrow")
     steer_left = _key_down(held_keys, "left arrow")
-    throttle = 0 if brake else throttle_forward - throttle_reverse
-    return RobotCommand(throttle=float(throttle), steer=float(steer_left - steer_right), brake=float(brake))
+    throttle = throttle_forward - throttle_reverse
+    return RobotCommand(throttle=float(throttle), steer=float(steer_left - steer_right))
 
 
 def gamepad_command(held_keys: Any) -> RobotCommand:
@@ -29,12 +28,9 @@ def gamepad_command(held_keys: Any) -> RobotCommand:
     steering_axis = _deadzone(_axis_value(held_keys, GAMEPAD_STEERING_AXIS), GAMEPAD_STICK_DEADZONE)
     accelerator = _trigger_amount(_axis_value(held_keys, GAMEPAD_ACCELERATOR_AXIS))
     reverse = _trigger_amount(_axis_value(held_keys, GAMEPAD_REVERSE_AXIS))
-    brake = max(accelerator, reverse) if accelerator > 0.0 and reverse > 0.0 else 0.0
-    throttle = 0.0 if brake > 0.0 else accelerator - reverse
     return RobotCommand(
-        throttle=throttle,
+        throttle=accelerator - reverse,
         steer=-steering_axis,
-        brake=brake,
     )
 
 
@@ -46,7 +42,6 @@ def manual_drive_command(held_keys: Any) -> RobotCommand:
         RobotCommand(
             throttle=keyboard.throttle + gamepad.throttle,
             steer=keyboard.steer + gamepad.steer,
-            brake=max(keyboard.brake, gamepad.brake),
         )
     )
 

@@ -1,21 +1,21 @@
 """Friendly imports for student controllers and simple simulator scripts."""
 
 from racing.game.config import CameraView, GameConfig, HeadToHeadViewerConfig, RacingAudioConfig
-from racing.student.api import (
-    CameraCompetitorReading,
-    CameraSensors,
-    ContactSensors,
-    ImuSensors,
-    LidarSensors,
-    OdometrySensors,
-    RobotCommand,
-    RobotController,
-    RobotSensors,
-    StudentControllerSubmission,
-    clamp_command,
-    default_student_controller,
-    load_student_controller,
-    load_student_submission,
+from racing.game.recording import (
+    HUMAN_GAMEPLAY_SCHEMA_VERSION,
+    HumanGameplayRecorder,
+    human_gameplay_record,
+    robot_command_to_dict,
+    robot_sensors_to_dict,
+)
+from racing.main import build_scene, create_app, create_head_to_head_viewer_app, main
+from racing.physics import (
+    PhysicsScene,
+    RobotVehicle,
+    VehiclePhysicsConfig,
+    apply_robot_vehicle_command,
+    apply_vehicle_command,
+    wheel_connection_points,
 )
 from racing.race.head_to_head import (
     HeadToHeadRaceEntry,
@@ -26,14 +26,23 @@ from racing.race.head_to_head import (
     format_head_to_head_result,
     run_headless_head_to_head,
 )
-from racing.main import build_scene, create_app, create_head_to_head_viewer_app, main
-from racing.physics import (
-    PhysicsScene,
-    RobotVehicle,
-    VehiclePhysicsConfig,
-    apply_robot_vehicle_command,
-    apply_vehicle_command,
-    wheel_connection_points,
+from racing.race.rules import HeadToHeadRaceRules, HeadToHeadScoring
+from racing.student.api import (
+    CameraCompetitorReading,
+    CameraSensors,
+    ContactSensors,
+    ImuSensors,
+    LidarSensors,
+    OdometrySensors,
+    RobotCommand,
+    RobotController,
+    RobotControllerFactory,
+    RobotSensors,
+    StudentControllerSubmission,
+    clamp_command,
+    default_student_controller,
+    load_student_controller,
+    load_student_submission,
 )
 from racing.track.world import (
     MUGELLO_SHORT_LAYOUT,
@@ -56,6 +65,7 @@ from racing.track.world import (
 )
 
 __all__ = [
+    "HUMAN_GAMEPLAY_SCHEMA_VERSION",
     "MUGELLO_SHORT_LAYOUT",
     "NOMINAL_CAR_WIDTH",
     "START_POSITION",
@@ -70,9 +80,12 @@ __all__ = [
     "GameConfig",
     "HeadToHeadRaceEntry",
     "HeadToHeadRaceResult",
+    "HeadToHeadRaceRules",
     "HeadToHeadResult",
+    "HeadToHeadScoring",
     "HeadToHeadTeamRaceStats",
     "HeadToHeadViewerConfig",
+    "HumanGameplayRecorder",
     "ImuSensors",
     "LidarSensors",
     "OdometrySensors",
@@ -80,6 +93,7 @@ __all__ = [
     "RacingAudioConfig",
     "RobotCommand",
     "RobotController",
+    "RobotControllerFactory",
     "RobotSensors",
     "RobotVehicle",
     "StudentControllerSubmission",
@@ -98,9 +112,12 @@ __all__ = [
     "create_head_to_head_viewer_app",
     "default_student_controller",
     "format_head_to_head_result",
+    "human_gameplay_record",
     "load_student_controller",
     "load_student_submission",
     "main",
+    "robot_command_to_dict",
+    "robot_sensors_to_dict",
     "run_headless_head_to_head",
     "total_track_length",
     "track_bounds",

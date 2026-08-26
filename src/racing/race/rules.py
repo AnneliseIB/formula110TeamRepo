@@ -35,7 +35,7 @@ class HeadToHeadRaceRules:
         if self.marshal_cooldown_seconds < 0.0:
             raise ValueError("marshal_cooldown_seconds cannot be negative")
 
-    def to_json(self) -> dict[str, object]:
+    def to_dict(self) -> dict[str, object]:
         """Convert race rules into simple values that can be logged or saved."""
         return {
             "scoring": self.scoring,
@@ -45,3 +45,7 @@ class HeadToHeadRaceRules:
             "marshal_penalty_m": self.marshal_penalty_m,
             "marshal_cooldown_seconds": self.marshal_cooldown_seconds,
         }
+
+    def to_json(self) -> dict[str, object]:
+        """Backward-compatible alias for :meth:`to_dict`."""
+        return self.to_dict()

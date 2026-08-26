@@ -11,7 +11,6 @@ from racing.track.world import (
     START_POSITION,
     TRACK_ID_MUGELLO_SHORT,
     TrackPoint,
-    clamp,
     sampled_track_centerline,
     track_layout_by_id,
 )
@@ -283,11 +282,6 @@ def track_heading_degrees(*, start: TrackPoint, end: TrackPoint) -> float:
 def heading_error_degrees(*, current_heading_degrees: float, target_heading_degrees: float) -> float:
     """Measure the smallest left/right turn needed to face a target heading."""
     return ((target_heading_degrees - current_heading_degrees + 180.0) % 360.0) - 180.0
-
-
-def damage_adjusted_score(score: float, *, damage: float) -> float:
-    """Reduce a distance score when the car is damaged."""
-    return max(0.0, score) * (1.0 - clamp(damage, 0.0, 1.0))
 
 
 def _rebased_track_points(points: tuple[TrackPoint, ...], *, start_line: TrackPoint) -> tuple[TrackPoint, ...]:

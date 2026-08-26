@@ -5,7 +5,6 @@ import pytest
 from racing.race.progress import (
     LapProgressTracker,
     build_track_progress_model,
-    damage_adjusted_score,
     heading_error_degrees,
     project_track_position,
     track_pose_at_distance,
@@ -59,8 +58,3 @@ def test_lap_progress_tracker_counts_wrapped_forward_progress() -> None:
 def test_heading_error_wraps_to_signed_shortest_turn() -> None:
     assert heading_error_degrees(current_heading_degrees=350.0, target_heading_degrees=10.0) == pytest.approx(20.0)
     assert heading_error_degrees(current_heading_degrees=10.0, target_heading_degrees=350.0) == pytest.approx(-20.0)
-
-
-def test_damage_adjusted_score_scales_by_remaining_health() -> None:
-    assert damage_adjusted_score(100.0, damage=0.25) == pytest.approx(75.0)
-    assert damage_adjusted_score(100.0, damage=2.0) == 0.0

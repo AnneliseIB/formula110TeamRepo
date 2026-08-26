@@ -5,19 +5,20 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Protocol
 
-from racing.student.api import RobotController
-from racing.race.rules import HeadToHeadRaceRules
-from racing.race.runtime import DEFAULT_RACE_RANDOM_SEED
 from racing.graphics.colors import (
     DEFAULT_CHALLENGER_TEAM_COLOR,
     DEFAULT_FORMULA_TEAM_COLOR,
     DEFAULT_INCUMBENT_TEAM_COLOR,
     ColorRGBA,
 )
+from racing.race.rules import HeadToHeadRaceRules
+from racing.race.runtime import DEFAULT_RACE_RANDOM_SEED
+from racing.student.api import RobotController
 
-DEFAULT_RACE_SECONDS = 60.0
+DEFAULT_RACE_SECONDS = 30.0
 
 
 class CameraView(Enum):
@@ -76,10 +77,12 @@ class GameConfig:
     student_controller: RobotController | None = None
     window_type: str | None = None
     fixed_delta_seconds: float = 1 / 60
+    random_seed: int = DEFAULT_RACE_RANDOM_SEED
     team_color: ColorRGBA = DEFAULT_FORMULA_TEAM_COLOR
     spawn_position: tuple[float, float, float] | None = None
     spawn_heading_degrees: float | None = None
     spawn_progress_distance_m: float | None = None
+    human_recording_path: Path | None = None
     audio: RacingAudioConfig = field(default_factory=RacingAudioConfig)
 
 

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from racing.race.head_to_head import controller_for_copy
 from racing.student.api import (
     CameraSensors,
     ContactSensors,
@@ -19,9 +20,22 @@ from racing.student.api import (
 
 
 def test_clamp_command_bounds_normalized_actuators() -> None:
-    command = clamp_command(RobotCommand(throttle=3.0, steer=-2.0, brake=1.7))
+    command = clamp_command(RobotCommand(throttle=3.0, steer=-2.0))
 
-    assert command == RobotCommand(throttle=1.0, steer=-1.0, brake=1.0)
+    assert command == RobotCommand(throttle=1.0, steer=-1.0)
+
+
+def test_robot_command_has_only_signed_throttle_and_steering_controls() -> None:
+    command = RobotCommand(throttle=-0.75, steer=0.25)
+
+    assert command.throttle == -0.75
+    assert command.steer == 0.25
+    assert not hasattr(command, "brake")
+
+
+def test_clamp_command_rejects_non_finite_values() -> None:
+    with pytest.raises(ValueError, match="finite"):
+        clamp_command(RobotCommand(throttle=float("nan")))
 
 
 def test_lidar_rejects_mismatched_angles_and_distances() -> None:
@@ -39,7 +53,6 @@ def test_default_student_controller_steers_toward_track_heading() -> None:
 
     assert command.throttle > 0.0
     assert command.steer > 0.0
-    assert command.brake == 0.0
 
 
 def test_default_student_controller_backs_out_of_contact() -> None:
@@ -51,7 +64,6 @@ def test_default_student_controller_backs_out_of_contact() -> None:
     command = default_student_controller(sensors)
 
     assert command.throttle < 0.0
-    assert command.brake == 0.0
 
 
 def test_bundled_starter_controller_loads_from_top_level_controllers_package() -> None:
@@ -82,6 +94,41 @@ def test_load_student_controller_from_file(tmp_path: Path) -> None:
     controller = load_student_controller(module_path, function_name="drive")
 
     assert controller(RobotSensors()) == RobotCommand(throttle=0.25, steer=0.5)
+
+
+def test_controller_factory_creates_independent_state_for_each_car(tmp_path: Path) -> None:
+    module_path = tmp_path / "stateful_driver.py"
+    module_path.write_text(
+        "from racing import RobotCommand, RobotSensors\n"
+        "\n"
+        "class Controller:\n"
+        "    def __init__(self) -> None:\n"
+        "        self.calls = 0\n"
+        "\n"
+        "    def __call__(self, sensors: RobotSensors) -> RobotCommand:\n"
+        "        self.calls += 1\n"
+        "        return RobotCommand(throttle=float(self.calls) / 10.0)\n"
+        "\n"
+        "def create_controller() -> Controller:\n"
+        "    return Controller()\n",
+        encoding="utf-8",
+    )
+
+    prototype = load_student_controller(module_path)
+    first_car = controller_for_copy(prototype)
+    second_car = controller_for_copy(prototype)
+
+    assert first_car(RobotSensors()).throttle == 0.1
+    assert first_car(RobotSensors()).throttle == 0.2
+    assert second_car(RobotSensors()).throttle == 0.1
+
+
+def test_controller_factory_must_return_callable(tmp_path: Path) -> None:
+    module_path = tmp_path / "invalid_factory.py"
+    module_path.write_text("def create_controller():\n    return 123\n", encoding="utf-8")
+
+    with pytest.raises(TypeError, match="must return a callable"):
+        load_student_controller(module_path)
 
 
 def test_load_student_submission_returns_none_for_missing_display_name(tmp_path: Path) -> None:
