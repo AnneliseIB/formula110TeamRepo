@@ -126,7 +126,7 @@ display metadata. Keep model files and controller helper modules under
 Submitted inference must run on CPU. CUDA, MPS, ROCm, and other accelerators
 must not be required or selected. The complete controller process—including
 Python, imported libraries, model parameters, temporary tensors, caches, and
-controller state—must remain at or below **512 MiB of resident memory**.
+controller state—must remain at or below **1.5 GiB of resident memory**.
 
 For PyTorch, load artifacts onto CPU, enter evaluation mode, and use inference
 mode:
@@ -159,21 +159,25 @@ uv sync --managed-python
 ```
 
 Commit both `pyproject.toml` and `uv.lock` when dependency versions change.
-Prefer CPU-capable packages and include imported library memory in the 512 MiB
+Prefer CPU-capable packages and include imported library memory in the 1.5 GiB
 limit. Training-only libraries do not need to be imported by the runtime
 controller.
 
 Keep inference artifacts small, read-only, and addressed relative to the
-controller module rather than the current working directory. Export the full
-controller package when it uses non-Python files or dynamically loaded helpers:
+controller module rather than the current working directory. Export a
+submission by naming the one controller the grader should evaluate:
 
 ```bash
-uv run python scripts/export_student_controllers.py --all-controllers
+uv run python scripts/export_student_controllers.py controllers.candidate
 ```
 
-The archive packages `src/controllers/`. Dependency declarations remain in
-`pyproject.toml` and `uv.lock`. Do not package training-only datasets, virtual
-environments, or experiment logs with the runtime controller.
+The archive packages the complete `src/controllers/` tree, including checkpoints
+and other runtime assets, along with `pyproject.toml`, `uv.lock`, and a manifest
+that identifies the selected module. The grader syncs the declared runtime
+dependencies before loading only that controller. Do not put training-only
+datasets, virtual environments, or experiment logs under `src/controllers/`;
+generated `__pycache__` directories, `.pyc` files, and `py.typed` markers are
+omitted from the archive.
 
 ## Capturing human demonstrations
 
@@ -261,14 +265,38 @@ uv run racing h2h \
 
 Races default to 30 seconds. On the starting grid, the car in the outside lane
 starts ahead of the car in the inside lane. Scored distance is forward track
-progress minus marshal penalties. Wall and car contact continue to count toward
-progress; contact and damage are reported separately and do not multiply or
-otherwise reduce distance. At the end of a watched race, the simulation pauses
-on the final positions and keeps the window open with a winner banner and both
+progress minus marshal penalties.
 sides' scored distances.
 
-Add `--json` for a versioned machine-readable result. The Python API exposes the
-same runner:
+### Machine-readable evaluation results
+
+Evaluation and training harnesses do not need to scrape the terminal table. Add
+`--json` to an automated headless race to print one versioned JSON document to
+standard output, which can be parsed directly or redirected to a file:
+
+```bash
+uv run racing h2h \
+  --challenger-module controllers.candidate \
+  --incumbent-module controllers.baseline \
+  --seed 110 \
+  --races 7 \
+  --round-seconds 30 \
+  --json > evaluation.json
+```
+
+The top-level `summary` reports the suite winner, win counts, ties, and aggregate
+margin. `races` contains each race's winner and margin plus both teams' scored
+and raw distances, laps, damage, contact time, speed, off-track time, and marshal
+activity. The document also records the seed, timestep, duration, and race rules
+needed to interpret or reproduce the result. Check `schema_version` before
+consuming saved results across simulator versions.
+
+`--json` is intentionally limited to automated headless head-to-head races.
+Use `--watch` for visual debugging, then run the same controllers and seed
+without `--watch` to collect structured evaluation results.
+
+For an in-process evaluation loop, the public Python API returns typed result
+objects and exposes the same data as a JSON-compatible dictionary:
 
 ```python
 from racing import load_student_submission, run_headless_head_to_head
@@ -285,12 +313,18 @@ result = run_headless_head_to_head(
     random_seed=110,
 )
 record = result.to_dict()
+
+winner = result.winner
+candidate_distance_m = sum(
+    race.challenger.team_sum_distance_m for race in result.races
+)
 ```
 
 `run_headless_head_to_head` also accepts `fixed_delta_seconds`, copy counts,
-race rules, and a `sensor_sample_callback` observation hook. Formula 110 does
-not define a replay buffer, reward, fitness function, optimizer, or training
-loop.
+race rules, and a `sensor_sample_callback` observation hook for a training or
+analysis pipeline that also needs per-tick public sensor snapshots. Formula 110
+does not define a replay buffer, reward, fitness function, optimizer, or
+training loop.
 
 ## Reproducibility and fair comparison
 
@@ -313,33 +347,11 @@ Improve the candidate, then evaluate both from identical seeds. A change that
 looks better in one watched run can still lose distance or take more damage over
 a multi-seed suite.
 
-## Project map
-
-Stay on the public surface unless a task specifically changes the simulator:
-
-| Path | Purpose |
-| --- | --- |
-| `GETTING_STARTED.md` | Installation, first drive, and first controller |
-| `SENSORS.md` | Complete sensor types, units, ranges, and semantics |
-| `src/controllers/` | Student controllers, helpers, and model artifacts |
-| `src/racing/student/api.py` | Sensor, command, loading, and controller contracts |
-| `src/racing/game/recording.py` | Human JSONL schema and serializers |
-| `src/racing/race/head_to_head.py` | Public headless runner and result types |
-| `src/racing/race/rules.py` | Competitive scoring and marshal rules |
-| `autograder/` | Isolated Gradescope packaging and runtime |
-| `tests/` | Simulator contract and regression tests |
-
-For controller work, import friendly names from `racing`. Do not couple a policy
-to private underscore-prefixed functions, Panda3D nodes, or mutable physics
-objects. Before implementation, identify the observation representation,
-controller packaging choice, evaluation suite, CPU behavior, and expected
-memory footprint.
-
 ## Intentional non-goals
 
 Formula 110 does not prescribe or provide a neural-network architecture,
 genetic algorithm, observation vector, normalization scheme, reward, fitness
 function, replay buffer, optimizer, training schedule, hyperparameters, or
 experiment tracker. Those are controller-design decisions. The stable handoff
-point is a CPU controller that fits within 512 MiB and maps the documented
+point is a CPU controller that fits within 1.5 GiB and maps the documented
 sensor snapshot to a valid command.
