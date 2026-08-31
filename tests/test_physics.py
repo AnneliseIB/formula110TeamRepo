@@ -17,7 +17,9 @@ from racing.physics import (
     resolve_vehicle_actuator_command,
     vehicle_collision_bounds,
     vehicle_spawn_height,
+    wall_damage_from_impact_force,
     wall_damage_from_impact_impulse,
+    wall_damage_reference_force_n,
     wall_damage_reference_impulse_n_s,
     wheel_axis_points,
     wheel_connection_points,
@@ -109,11 +111,26 @@ def test_vehicle_spawn_height_requires_positive_wheel_radius() -> None:
         vehicle_spawn_height(VehiclePhysicsConfig(wheel_radius=0.0))
 
 
-def test_wall_damage_scales_to_full_damage_at_reference_impulse() -> None:
+def test_wall_impact_damage_is_halved_from_original_model() -> None:
     reference = wall_damage_reference_impulse_n_s(FORMULA_VEHICLE_PHYSICS_CONFIG)
 
-    assert wall_damage_from_impact_impulse(reference, FORMULA_VEHICLE_PHYSICS_CONFIG) == 1.0
-    assert wall_damage_from_impact_impulse(reference / 2, FORMULA_VEHICLE_PHYSICS_CONFIG) == pytest.approx(0.25)
+    assert wall_damage_from_impact_impulse(reference, FORMULA_VEHICLE_PHYSICS_CONFIG) == pytest.approx(0.5)
+    assert wall_damage_from_impact_impulse(reference / 2, FORMULA_VEHICLE_PHYSICS_CONFIG) == pytest.approx(0.125)
+    assert wall_damage_from_impact_impulse(reference * 2, FORMULA_VEHICLE_PHYSICS_CONFIG) == pytest.approx(0.5)
+
+
+def test_wall_impact_force_damage_uses_halved_model() -> None:
+    fixed_time_step = 1 / 60
+    reference = wall_damage_reference_force_n(
+        FORMULA_VEHICLE_PHYSICS_CONFIG,
+        fixed_time_step=fixed_time_step,
+    )
+
+    assert wall_damage_from_impact_force(
+        reference,
+        FORMULA_VEHICLE_PHYSICS_CONFIG,
+        fixed_time_step=fixed_time_step,
+    ) == pytest.approx(0.5)
 
 
 def test_static_box_heading_rotates_around_physics_up_axis() -> None:

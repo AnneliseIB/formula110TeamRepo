@@ -17,6 +17,7 @@ RC_CAR_SUSPENSION_STIFFNESS = 100.0
 RC_CAR_WHEEL_CONNECTION_HEIGHT = 0.38
 RC_CAR_WHEEL_RADIUS = REFERENCE_VEHICLE_WHEEL_RADIUS * RC_CAR_LINEAR_SCALE * 0.80
 WALL_DAMAGE_FULL_IMPACT_SPEED_KMH = 100.0
+WALL_DAMAGE_SCALE = 0.5
 KILOMETERS_PER_HOUR_TO_METERS_PER_SECOND = 1.0 / 3.6
 WALL_DAMAGE_MIN_CLOSING_SPEED_MPS = 0.25
 VEHICLE_IMPACT_RESPONSE_MULTIPLIER = 2.0
@@ -518,7 +519,7 @@ def wall_damage_from_impact_impulse(
         impact_speed_kmh=full_damage_impact_speed_kmh,
     )
     impact_ratio = impulse_n_s / reference_impulse
-    return min(1.0, impact_ratio * impact_ratio)
+    return WALL_DAMAGE_SCALE * min(1.0, impact_ratio * impact_ratio)
 
 
 def wall_damage_from_impact_force(
@@ -537,7 +538,7 @@ def wall_damage_from_impact_force(
         impact_speed_kmh=full_damage_impact_speed_kmh,
     )
     impact_ratio = force_n / reference_force
-    return min(1.0, impact_ratio * impact_ratio)
+    return WALL_DAMAGE_SCALE * min(1.0, impact_ratio * impact_ratio)
 
 
 def apply_wall_impact_damage(
