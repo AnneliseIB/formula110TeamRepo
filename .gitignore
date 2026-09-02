@@ -8,3 +8,4 @@ dist/
 build/
 artifacts/*
 !artifacts/.gitkeep
+!artifacts/dynamics_model.npz

@@ -76,9 +76,13 @@ class _GainSearch:
 
     def _adjust(self, direction: float) -> None:
         if self.parameter == 0:
-            self.steer_gain = _clip(self.steer_gain + direction * self.steer_step, 0.70, 1.25)
+            self.steer_gain = _clip(
+                self.steer_gain + direction * self.steer_step, 0.70, 1.25
+            )
         else:
-            self.throttle_gain = _clip(self.throttle_gain + direction * self.throttle_step, 0.025, 0.060)
+            self.throttle_gain = _clip(
+                self.throttle_gain + direction * self.throttle_step, 0.025, 0.060
+            )
 
     def _scale_step(self, scale: float) -> None:
         self.steer_step = max(0.02, self.steer_step * scale)
@@ -123,7 +127,12 @@ class ReactiveController:
 
         # Local heading drives immediate steering. Lookahead and centre offset
         # begin the turn earlier, which avoids a late left/right correction.
-        path_error = heading_error / 2.1 + near_preview / 25.0 + far_preview / 80.0 + center_offset / 4.5
+        path_error = (
+            heading_error / 2.1
+            + near_preview / 25.0
+            + far_preview / 80.0
+            + center_offset / 4.5
+        )
         error_rate = (path_error - self.previous_path_error) / max(dt_s, 1 / 60)
         self.previous_path_error = path_error
         steer = tanh(
@@ -171,9 +180,13 @@ class ReactiveController:
         # Previewed curvature and forward clearance form a feed-forward speed
         # signal: accelerate harder only when the visible track is straight and
         # neither a wall nor another object is in front, then ease off early.
-        preview_turn = _clip((abs(near_preview) + 0.5 * abs(far_preview)) / 35.0, 0.0, 1.0)
+        preview_turn = _clip(
+            (abs(near_preview) + 0.5 * abs(far_preview)) / 35.0, 0.0, 1.0
+        )
         open_track = _clip((forward_clearance - 2.0) / 5.0, 0.0, 1.0)
-        straight_boost = 0.46 * (1.0 - preview_turn) * open_track if camera.visible else 0.0
+        straight_boost = (
+            0.46 * (1.0 - preview_turn) * open_track if camera.visible else 0.0
+        )
         sharp_turn = _clip((preview_turn - 0.35) / 0.65, 0.0, 1.0)
         throttle = tanh(
             1.15
