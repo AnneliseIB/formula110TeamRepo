@@ -54,9 +54,13 @@ PLANNING_RANDOM_SEED = 110
 FloatArray = np.ndarray[Any, np.dtype[np.float64]]
 
 NORMAL_LOOKAHEAD_SECONDS = 0.6
-RECOVERY_LOOKAHEAD_SECONDS = 1.5  # longer: a large error takes more than 0.6s to correct,
+RECOVERY_LOOKAHEAD_SECONDS = (
+    1.5  # longer: a large error takes more than 0.6s to correct,
+)
 # and the model needs to be able to "see" that far to justify committing to it now.
-RECOVERY_HEADING_ERROR_RAD = radians(25.0)  # matches the 25-degree threshold `default_student_controller` uses
+RECOVERY_HEADING_ERROR_RAD = radians(
+    25.0
+)  # matches the 25-degree threshold `default_student_controller` uses
 RECOVERY_CENTER_OFFSET_M = 0.5
 NORMAL_EXPLORATION_STD = 0.15
 
@@ -179,7 +183,10 @@ def _plan_with_correlated_noise(
         front_wall_m=state.front_wall_m, states=states, dt_s=dt_s
     )
     best_index = int(np.argmin(cost))
-    return tuple(RobotCommand(throttle=float(throttle), steer=float(steer)) for throttle, steer in actions[best_index])
+    return tuple(
+        RobotCommand(throttle=float(throttle), steer=float(steer))
+        for throttle, steer in actions[best_index]
+    )
 
 
 class LearnedDynamicsMpcController:
@@ -192,11 +199,17 @@ class LearnedDynamicsMpcController:
     normal and recovery mode.
     """
 
-    def __init__(self, *, model: DynamicsModel, random_seed: int = PLANNING_RANDOM_SEED) -> None:
+    def __init__(
+        self, *, model: DynamicsModel, random_seed: int = PLANNING_RANDOM_SEED
+    ) -> None:
         self._model = model
         self._rng = np.random.default_rng(random_seed)
-        self._normal_horizon = max(1, round(NORMAL_LOOKAHEAD_SECONDS / model.training_dt_s))
-        self._recovery_horizon = max(1, round(RECOVERY_LOOKAHEAD_SECONDS / model.training_dt_s))
+        self._normal_horizon = max(
+            1, round(NORMAL_LOOKAHEAD_SECONDS / model.training_dt_s)
+        )
+        self._recovery_horizon = max(
+            1, round(RECOVERY_LOOKAHEAD_SECONDS / model.training_dt_s)
+        )
         self._previous_action: RobotCommand | None = None
 
     def __call__(self, sensors: RobotSensors) -> RobotCommand:
@@ -210,12 +223,19 @@ class LearnedDynamicsMpcController:
         warm_start: FloatArray | None = None
         if self._previous_action is not None:
             warm_start = np.tile(
-                np.array([[self._previous_action.throttle, self._previous_action.steer]], dtype=np.float64),
+                np.array(
+                    [[self._previous_action.throttle, self._previous_action.steer]],
+                    dtype=np.float64,
+                ),
                 (horizon, 1),
             )
 
-        exploration_std = RECOVERY_EXPLORATION_STD if needs_recovery else NORMAL_EXPLORATION_STD
-        max_throttle = RECOVERY_MAX_THROTTLE_COMMAND if needs_recovery else MAX_THROTTLE_COMMAND
+        exploration_std = (
+            RECOVERY_EXPLORATION_STD if needs_recovery else NORMAL_EXPLORATION_STD
+        )
+        max_throttle = (
+            RECOVERY_MAX_THROTTLE_COMMAND if needs_recovery else MAX_THROTTLE_COMMAND
+        )
         if needs_recovery and state.speed_mps > RECOVERY_BRAKE_SPEED_THRESHOLD_MPS:
             max_throttle = min(max_throttle, RECOVERY_BRAKE_MAX_THROTTLE)
         if state.speed_mps >= SAFE_SPEED_MPS:
@@ -237,12 +257,27 @@ class LearnedDynamicsMpcController:
 
     def copy_for_car(self) -> LearnedDynamicsMpcController:
         """Give every car/race its own RNG stream, sharing the same loaded model."""
-        return LearnedDynamicsMpcController(model=self._model, random_seed=int(self._rng.integers(0, 2**31 - 1)))
+        return LearnedDynamicsMpcController(
+            model=self._model, random_seed=int(self._rng.integers(0, 2**31 - 1))
+        )
 
 
-def create_controller(*, model_path: Path = DEFAULT_MODEL_PATH) -> LearnedDynamicsMpcController:
+def create_controller(
+    *, model_path: Path = DEFAULT_MODEL_PATH
+) -> LearnedDynamicsMpcController:
     model = DynamicsModel.load(model_path)
     return LearnedDynamicsMpcController(model=model)
 
 
-__all__ = ["LearnedDynamicsMpcController", "LocalState", "create_controller"]
+_fallback_controller: LearnedDynamicsMpcController | None = None
+
+
+def control(sensors: RobotSensors) -> RobotCommand:
+    """Compatibility entry point for graders that load a plain function."""
+    global _fallback_controller
+    if _fallback_controller is None:
+        _fallback_controller = create_controller()
+    return _fallback_controller(sensors)
+
+
+__all__ = ["LearnedDynamicsMpcController", "LocalState", "control", "create_controller"]
