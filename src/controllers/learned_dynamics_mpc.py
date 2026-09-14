@@ -94,7 +94,22 @@ RECOVERY_EXPLORATION_STD = 0.6
 # baseline despite the vehicle safely handling far higher speeds under simple
 # control. Holding actions for ~0.75s and biasing exploration toward forward
 # throttle (see that script) gave the dataset dense coverage up to its
-# 99th-percentile speed of ~18.6 m/s, so the cap can move up to match.
+# 99th-percentile speed of ~18.6 m/s, so the cap moved up to match.
+#
+# A 2026-09-13 attempt to raise this further by setting that script's
+# THROTTLE_MIN to 0.5 (from -0.2) was reverted: `write_jsonl` overwrites the
+# dataset file rather than merging, and THROTTLE_MIN applies to every sampled
+# action, so that run collected zero braking/negative-throttle examples. The
+# retrained model lost low-speed and recovery accuracy across the board (5-seed
+# distance collapsed from ~1190m to ~170m, with new crashes even at low speed)
+# -- not a speed-cap problem, a lost-coverage-elsewhere problem.
+#
+# Fixed same day with `collect_dynamics_dataset.py`'s CRUISE_HOLD_PROBABILITY
+# mixed sampling (80% aggressive-forward holds, 20% genuine braking holds down
+# to -1.0 throttle) -- held-out one-step MSE actually improved over the
+# original model (0.286 -> 0.178), and the new dataset has dense coverage to a
+# 99th-percentile speed of ~20.5 m/s (p99.5 ~22.4), so the cap follows the same
+# below-the-tail margin as before rather than chasing all the way to p99.
 MAX_THROTTLE_COMMAND = 1.0
 SAFE_SPEED_MPS = 15.0
 

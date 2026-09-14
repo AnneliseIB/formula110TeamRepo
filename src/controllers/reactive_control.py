@@ -18,6 +18,15 @@ from racing import RobotCommand, RobotSensors
 RACING_NAME = "Reactive Optimizer"
 RACING_COLOR = "#22b8cf"
 
+# Stopping distance scales with the square of speed, not linearly with it. This coefficient is
+# calibrated so `brake_distance` below still equals its old value (1.3 + 0.15 * 18.5 ~= 4.075m) at
+# the ~18.5 m/s baseline cruise speed, while correctly growing faster above it -- the old linear
+# formula underestimated braking distance at higher speeds, letting the hard brake trigger fire
+# too late and causing a loss-of-control corner-entry crash (diagnosed 2026-09-09, see lab
+# notebook: front_wall shrank steadily while the car kept accelerating, then heading error spiked
+# from -6.7 to -60 degrees in under half a second once the brake finally engaged too close in).
+BRAKE_DISTANCE_SPEED_COEFF = 0.15 / 18.5
+
 
 def _clip(value: float, low: float, high: float) -> float:
     return min(max(value, low), high)
@@ -195,7 +204,7 @@ class ReactiveController:
             - 0.08 * abs(steer)
             - 0.35 * sharp_turn
         )
-        brake_distance = 1.3 + 0.15 * max(speed, 0.0)
+        brake_distance = 1.3 + BRAKE_DISTANCE_SPEED_COEFF * max(speed, 0.0) ** 2
         if front_wall < brake_distance and speed > 5.0:
             throttle = min(throttle, _clip(-0.14 * (speed - 3.0), -1.0, 0.0))
 

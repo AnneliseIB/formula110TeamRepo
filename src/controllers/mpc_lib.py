@@ -64,14 +64,21 @@ class LocalState:
     def to_array(self) -> FloatArray:
         """Flatten to the fixed-width vector `predict_fn` operates on."""
         return np.array(
-            (self.speed_mps, self.heading_error_rad, self.center_offset_m, *self.lookahead_offsets_m),
+            (
+                self.speed_mps,
+                self.heading_error_rad,
+                self.center_offset_m,
+                *self.lookahead_offsets_m,
+            ),
             dtype=np.float64,
         )
 
     @staticmethod
     def from_array(values: FloatArray, *, front_wall_m: float) -> LocalState:
         """Rebuild a `LocalState` from a predicted state vector."""
-        speed_mps, heading_error_rad, center_offset_m, y1, y2, y3 = (float(value) for value in values)
+        speed_mps, heading_error_rad, center_offset_m, y1, y2, y3 = (
+            float(value) for value in values
+        )
         return LocalState(
             speed_mps=speed_mps,
             heading_error_rad=heading_error_rad,
@@ -131,7 +138,9 @@ def rollout_cost(states: FloatArray, actions: FloatArray, *, dt_s: float) -> Flo
     )
 
 
-def wall_collision_cost(*, front_wall_m: float, states: FloatArray, dt_s: float) -> FloatArray:
+def wall_collision_cost(
+    *, front_wall_m: float, states: FloatArray, dt_s: float
+) -> FloatArray:
     """Penalize rollouts predicted to travel past the current front wall reading.
 
     `front_wall_m` only reflects the wall directly ahead at plan time (the
@@ -154,7 +163,9 @@ def shift_plan_for_warm_start(plan: tuple[RobotCommand, ...]) -> FloatArray:
     keep the same length, since the planner has no better guess for what
     happens beyond its old horizon.
     """
-    array = np.array([[command.throttle, command.steer] for command in plan], dtype=np.float64)
+    array = np.array(
+        [[command.throttle, command.steer] for command in plan], dtype=np.float64
+    )
     return np.concatenate([array[1:], array[-1:]], axis=0)
 
 
@@ -206,4 +217,7 @@ def plan_action_sequence(
         front_wall_m=state.front_wall_m, states=states, dt_s=dt_s
     )
     best_index = int(np.argmin(cost))
-    return tuple(RobotCommand(throttle=float(throttle), steer=float(steer)) for throttle, steer in actions[best_index])
+    return tuple(
+        RobotCommand(throttle=float(throttle), steer=float(steer))
+        for throttle, steer in actions[best_index]
+    )
