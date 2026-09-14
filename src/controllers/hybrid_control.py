@@ -1,9 +1,8 @@
-"""Hybrid controller combining reactive speed with learned-model look-ahead.
+"""Fast camera-preview driving with learned-dynamics MPC for slow recovery.
 
-Learned-dynamics MPC owns steering because it was the safer and more consistent
-path follower in grader-style trials. The reactive controller contributes its
-stronger throttle command only on low-risk track; when current sensor risk or
-major policy disagreement appears, the more cautious throttle wins.
+The learned model is unreliable when extrapolated far beyond its training
+speeds. Preview feedback handles racing pace; MPC corrects large path errors
+at low speed, and reactive control backs away after contact.
 """
 
 from __future__ import annotations
@@ -13,21 +12,23 @@ from pathlib import Path
 
 import numpy as np
 
+from controllers.drive_transition import DriveTransitionGuard
 from controllers.dynamics_model import DynamicsModel
 from controllers.learned_dynamics_mpc import (
     DEFAULT_MODEL_PATH,
     LearnedDynamicsMpcController,
 )
+from controllers.preview_control import PreviewController
 from controllers.reactive_control import ReactiveController
 from racing import RobotCommand, RobotSensors
 
 RACING_NAME = "Hybrid Reactive MPC"
 RACING_COLOR = "#F1C40F"
 
-CAUTION_HEADING_ERROR_DEGREES = 18.0
-CAUTION_CENTER_OFFSET_M = 0.42
-CAUTION_FRONT_WALL_M = 4.0
-MAX_CRUISE_SPEED_MPS = 18.5
+RECOVERY_HEADING_ERROR_DEGREES = 35.0
+RECOVERY_CENTER_OFFSET_M = 2.4
+RECOVERY_SPEED_MPS = 8.0
+MAX_CRUISE_SPEED_MPS = 40.0
 
 
 def _clip(value: float, low: float, high: float) -> float:
@@ -39,59 +40,67 @@ def _finite(value: float, fallback: float) -> float:
 
 
 class HybridController:
-    """Use reactive control normally and grant MPC authority as risk rises."""
+    """Use preview feedback at racing speed and MPC for low-speed recovery."""
 
     def __init__(self, *, model: DynamicsModel, random_seed: int = 110) -> None:
         self._model = model
         self._rng = np.random.default_rng(random_seed)
         self._reactive = ReactiveController()
-        self._mpc = LearnedDynamicsMpcController(
-            model=model, random_seed=int(self._rng.integers(0, 2**31 - 1))
-        )
+        self._preview = PreviewController()
+        self._drive_transition = DriveTransitionGuard()
+        self._recovering = False
+        self._mpc = LearnedDynamicsMpcController(model=model, random_seed=int(self._rng.integers(0, 2**31 - 1)))
 
     def __call__(self, sensors: RobotSensors) -> RobotCommand:
         reactive = self._reactive(sensors)
-        mpc = self._mpc(sensors)
-
-        # Preserve the reactive controller's explicit post-contact reverse maneuver.
-        if sensors.contact.wall > 0.0 or reactive.throttle < -0.5:
-            return reactive
-
+        speed = _finite(sensors.odometry.speed_mps, 0.0)
         heading_error = abs(_finite(sensors.camera.heading_error_degrees, 180.0))
         center_offset = abs(_finite(sensors.camera.center_offset_m, 10.0))
-        front_wall = _finite(sensors.wall_lidar.front_m, 100.0)
-        disagreement = abs(reactive.steer - mpc.steer)
-        caution = (
-            not sensors.camera.visible
-            or heading_error > CAUTION_HEADING_ERROR_DEGREES
-            or center_offset > CAUTION_CENTER_OFFSET_M
-            or front_wall < CAUTION_FRONT_WALL_M
-            or disagreement > 0.55
+        preview_available = (
+            sensors.camera.visible
+            and len(sensors.camera.lookahead_offsets_m) >= 2
+            and all(
+                isfinite(value)
+                for value in (
+                    sensors.camera.heading_error_degrees,
+                    sensors.camera.center_offset_m,
+                    *sensors.camera.lookahead_offsets_m,
+                    sensors.imu.yaw_rate_degrees_per_s,
+                    sensors.odometry.speed_mps,
+                )
+            )
         )
-
-        # Keep MPC's demonstrated-safe path following rather than averaging two
-        # steering policies, which weakened both during the first hybrid trial.
-        steer = mpc.steer
-
-        # Borrow reactive acceleration on clear track. In caution, hand throttle
-        # fully to MPC rather than min()'ing it against reactive -- MPC already
-        # planned its throttle around the same risk signal that triggered
-        # caution, so capping it toward reactive's value only threw away a plan
-        # that already accounted for the danger. Verified 2026-09-13 via
-        # `uv run python scripts/evaluate_seed_suite.py --challenger
-        # controllers.hybrid_control_mpc_caution --incumbent
-        # controllers.hybrid_control`: MPC-in-caution covered 902.00m vs 856.65m
-        # over the standard 5-seed suite, with zero wall contact/damage/off-track
-        # on both sides -- more distance for no safety cost.
-        throttle = mpc.throttle if caution else reactive.throttle
-        if sensors.odometry.speed_mps >= MAX_CRUISE_SPEED_MPS:
-            throttle = min(throttle, 0.0)
-        return RobotCommand(throttle=_clip(throttle, -1.0, 1.0), steer=steer)
+        needs_recovery = (
+            preview_available
+            and abs(speed) < RECOVERY_SPEED_MPS
+            and (heading_error > RECOVERY_HEADING_ERROR_DEGREES or center_offset > RECOVERY_CENTER_OFFSET_M)
+        )
+        # Ordinary braking must not be mistaken for a post-contact reverse.
+        if self._reactive.recovery_s > 0.0 or sensors.contact.wall > 0.0:
+            command = reactive
+            needs_recovery = False
+        elif not preview_available:
+            command = RobotCommand(throttle=0.0, steer=reactive.steer)
+        elif needs_recovery:
+            if not self._recovering:
+                # A plan from a previous recovery is no longer a useful warm start.
+                self._mpc = LearnedDynamicsMpcController(
+                    model=self._model,
+                    random_seed=int(self._rng.integers(0, 2**31 - 1)),
+                )
+            command = self._mpc(sensors)
+        else:
+            command = self._preview(sensors)
+        self._recovering = needs_recovery
+        throttle = min(command.throttle, 0.0) if speed >= MAX_CRUISE_SPEED_MPS else command.throttle
+        command = RobotCommand(
+            throttle=_clip(_finite(throttle, 0.0), -1.0, 1.0),
+            steer=_clip(_finite(command.steer, 0.0), -1.0, 1.0),
+        )
+        return self._drive_transition(command, speed_mps=speed)
 
     def copy_for_car(self) -> HybridController:
-        return HybridController(
-            model=self._model, random_seed=int(self._rng.integers(0, 2**31 - 1))
-        )
+        return HybridController(model=self._model, random_seed=int(self._rng.integers(0, 2**31 - 1)))
 
 
 def create_controller(*, model_path: Path = DEFAULT_MODEL_PATH) -> HybridController:

@@ -61,7 +61,9 @@ class DynamicsModel:
         _, _, raw_output = self._forward(states, actions)
         return raw_output * self.output_std + self.output_mean
 
-    def predict_fn(self, states: FloatArray, actions: FloatArray, dt_s: float) -> FloatArray:
+    def predict_fn(
+        self, states: FloatArray, actions: FloatArray, dt_s: float
+    ) -> FloatArray:
         """`mpc_lib.PredictFn`-compatible next-state prediction.
 
         `dt_s` is accepted only to satisfy the shared planner interface and
@@ -103,12 +105,18 @@ class DynamicsModel:
         target_delta = next_states - states
         target_standardized = (target_delta - self.output_mean) / self.output_std
 
-        weights = np.ones(OUTPUT_DIM, dtype=np.float64) if loss_weights is None else loss_weights
+        weights = (
+            np.ones(OUTPUT_DIM, dtype=np.float64)
+            if loss_weights is None
+            else loss_weights
+        )
         error = raw_output - target_standardized
         loss = float(np.mean(weights[None, :] * error**2))
 
         sample_count = states.shape[0]
-        d_raw_output = (2.0 / (sample_count * OUTPUT_DIM)) * weights[None, :] * error  # (N, OUTPUT_DIM)
+        d_raw_output = (
+            (2.0 / (sample_count * OUTPUT_DIM)) * weights[None, :] * error
+        )  # (N, OUTPUT_DIM)
         d_w2 = hidden.T @ d_raw_output
         d_b2 = np.sum(d_raw_output, axis=0)
 
@@ -128,7 +136,9 @@ class DynamicsModel:
                 setattr(self, name, getattr(self, name) + velocity[name])
         return loss
 
-    def _forward(self, states: FloatArray, actions: FloatArray) -> tuple[FloatArray, FloatArray, FloatArray]:
+    def _forward(
+        self, states: FloatArray, actions: FloatArray
+    ) -> tuple[FloatArray, FloatArray, FloatArray]:
         inputs = np.concatenate([states, actions], axis=-1)
         normalized_input = (inputs - self.input_mean) / self.input_std
         hidden = np.maximum(normalized_input @ self.w1 + self.b1, 0.0)

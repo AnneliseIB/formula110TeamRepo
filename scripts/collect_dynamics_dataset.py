@@ -1,12 +1,27 @@
 """Collect (state, action, next_state) transitions for training a learned dynamics model.
 
-Drives with a smoothed random-exploration policy across several seeds so the
-logged data covers a wide range of throttle/steer combinations, then writes
-each transition as one flat-numeric JSON line, tagged with both a `run_id`
-(one continuous drive) and the `seed` it came from. Both `mpc_baseline.py`'s
-planner and this script use the same `LocalState` representation
-(`controllers.mpc_lib.local_state_from_sensors`), so the dataset directly
-matches what the planner will predict over.
+Drives with the real `ReactiveController` plus small noise on top across
+several seeds, then writes each transition as one flat-numeric JSON line,
+tagged with both a `run_id` (one continuous drive) and the `seed` it came
+from. Both `mpc_baseline.py`'s planner and this script use the same
+`LocalState` representation (`controllers.mpc_lib.local_state_from_sensors`),
+so the dataset directly matches what the planner will predict over.
+
+On-policy rather than random exploration since 2026-09-13: two prior attempts
+here used a random-hold exploration policy (uniform-random or a cruise/brake
+mixture, holding each draw for ~0.75s) to get organic 19-28 m/s coverage.
+Both *improved* held-out one-step MSE over the original model, and both
+produced controllers that raced dramatically worse in actual head-to-head
+evaluation (5-seed distance collapsing from ~1190m to 450-465m, with wall
+contact appearing in nearly every seed) -- at both the raised AND the
+original, previously-safe speed cap, and regardless of hidden-layer size (32
+vs 64). So it wasn't a coverage-width or model-capacity problem: held-out MSE
+on randomly-sampled states doesn't predict closed-loop driving quality,
+because random exploration visits throttle/steer combinations no real
+controller ever produces. Driving with `ReactiveController` instead -- which
+already reaches ~28 m/s on its own -- gives the model realistic, coherent
+trajectory shapes across the same speed range, which is what the planner
+actually needs to be accurate about.
 
 `DEFAULT_SEEDS` deliberately does *not* overlap with
 `racing.race.rules.HEAD_TO_HEAD_DEFAULT_SEED_SUITE`: that suite is reserved
@@ -30,6 +45,7 @@ from pathlib import Path
 import numpy as np
 
 from controllers.mpc_lib import LocalState, local_state_from_sensors
+from controllers.reactive_control import ReactiveController
 from racing import RobotCommand, RobotSensors, run_headless_head_to_head
 
 DEFAULT_OUTPUT_PATH = Path("artifacts/dynamics_dataset.jsonl")
@@ -37,31 +53,19 @@ DEFAULT_OUTPUT_PATH = Path("artifacts/dynamics_dataset.jsonl")
 DEFAULT_SEEDS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
 DEFAULT_RACES_PER_SEED = 2
 DEFAULT_ROUND_SECONDS = 40.0
-# 8 ticks (~0.13s) never let speed actually build past a few m/s before resampling, so the
-# dataset had almost no *dense* coverage of sustained higher speeds -- exactly the gap that
-# forced `learned_dynamics_mpc` to cap itself at 6 m/s despite the vehicle safely handling much
-# higher speeds under simple reactive control (see the 2026-09-01 lab notebook entry). Holding
-# each action for longer lets speed genuinely build and cruise within a single hold.
-ACTION_PERSISTENCE_STEPS = 45
-STEER_LIMIT = 0.9  # stay off the extremes so the car doesn't just spin in place
-# Biased toward forward driving rather than uniform(-1, 1): braking/reverse behavior is already
-# densely covered from short holds in earlier data, and what's missing is sustained forward
-# cruising and cornering at real speed, so most of the new exploration budget should go there.
-THROTTLE_MIN = -0.2
-THROTTLE_MAX = 1.0
+# Small enough to keep the underlying trajectory shape realistic (see module docstring for why
+# that matters), large enough to still visit states slightly off `ReactiveController`'s own line
+# so the model generalizes near the policy rather than memorizing one exact manifold.
+THROTTLE_NOISE_STD = 0.12
+STEER_NOISE_STD = 0.08
 
-# A "disturbance burst" mode was tried here on 2026-09-01: periodically inject a short, sharp
-# high-throttle/hard-steer action to deliberately create high-speed, large-heading-error
-# training examples (rare in plain random exploration, since a well-behaving policy rarely
-# reaches that combination on its own). It measurably improved the model's fit and race behavior
-# in exactly that regime -- but retraining on the resulting dataset was a net regression overall
-# (5-seed total distance 780.75m -> 430.32m), evidently costing this small, fixed-capacity model
-# accuracy elsewhere to accommodate the added disturbance examples. Reverted rather than shipped;
-# see the 2026-09-01 lab notebook entry for the full comparison.
+# Two random-exploration attempts preceded this approach (2026-09-09 short-hold uniform bias,
+# then a 2026-09-13 cruise/brake mixture) -- both are gone from this file now, but the lesson they
+# left is recorded in the module docstring above rather than repeated here.
 
 
-class RandomExplorationController:
-    """Holds a random action for a few ticks at a time and logs every transition it sees.
+class OnPolicyExplorationController:
+    """Drives with a real `ReactiveController` plus small noise, logging every transition.
 
     Logs into the shared `rows` list passed at construction, so every copy
     spawned by `copy_for_car` (one per race car) still writes into the same
@@ -82,8 +86,7 @@ class RandomExplorationController:
         self._rows = rows
         self._run_id_source = run_id_source
         self._run_id = next(run_id_source)
-        self._steps_remaining = 0
-        self._current = RobotCommand()
+        self._base = ReactiveController()
         self._previous_state: LocalState | None = None
         self._previous_action: RobotCommand | None = None
 
@@ -100,19 +103,17 @@ class RandomExplorationController:
                 )
             )
 
-        if self._steps_remaining <= 0:
-            throttle = float(self._rng.uniform(THROTTLE_MIN, THROTTLE_MAX))
-            steer = float(self._rng.uniform(-STEER_LIMIT, STEER_LIMIT))
-            self._current = RobotCommand(throttle=throttle, steer=steer)
-            self._steps_remaining = ACTION_PERSISTENCE_STEPS
-        self._steps_remaining -= 1
+        base_command = self._base(sensors)
+        throttle = float(np.clip(base_command.throttle + self._rng.normal(0.0, THROTTLE_NOISE_STD), -1.0, 1.0))
+        steer = float(np.clip(base_command.steer + self._rng.normal(0.0, STEER_NOISE_STD), -1.0, 1.0))
+        action = RobotCommand(throttle=throttle, steer=steer)
 
         self._previous_state = state
-        self._previous_action = self._current
-        return self._current
+        self._previous_action = action
+        return action
 
-    def copy_for_car(self) -> RandomExplorationController:
-        return RandomExplorationController(
+    def copy_for_car(self) -> OnPolicyExplorationController:
+        return OnPolicyExplorationController(
             rng=np.random.default_rng(self._rng.integers(0, 2**31 - 1)),
             rows=self._rows,
             run_id_source=self._run_id_source,
@@ -155,10 +156,10 @@ def collect_dataset(
     run_id_source = count()
 
     for seed in seeds:
-        challenger = RandomExplorationController(
+        challenger = OnPolicyExplorationController(
             rng=np.random.default_rng(rng.integers(0, 2**31 - 1)), rows=rows, run_id_source=run_id_source
         )
-        incumbent = RandomExplorationController(
+        incumbent = OnPolicyExplorationController(
             rng=np.random.default_rng(rng.integers(0, 2**31 - 1)), rows=rows, run_id_source=run_id_source
         )
         rows_before = len(rows)
